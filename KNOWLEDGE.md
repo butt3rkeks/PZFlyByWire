@@ -25,7 +25,7 @@ Pluggable flight engine framework for helicopter mods. Ships with the FBW (fly-b
 
 ### New (Fly-By-Wire, No Debug Required)
 
-**Tilt-as-Desired MPC** — the tilt angle IS the throttle:
+**Tilt-as-Desired PD with Reference Model** — the tilt angle IS the throttle:
 - **Simulation model** (`sim_pos`, `sim_vel`) tracks where the helicopter SHOULD be (pure math, no Bullet)
 - `sim_vel` is set DIRECTLY from `computeHorizontalTargets()` output (tilt angle x hspeed)
 - When keys released, auto-leveling gradually reduces tilt -> `sim_vel` naturally decays to zero
@@ -184,7 +184,7 @@ aerospace literature (DTIC, NASA quaternion control architectures).
 
 ### Direction Computation
 Forward direction extracted from `composeOrientation()` (`yawQ * _tiltQuat`) rotation matrix:
-`fwdPzX = R02, fwdPzY = R22`. Passed to HeliDirection as a parameter. Always correct,
+`fwdPzX = R02, fwdPzY = R22`. Returned via results table to the framework. Always correct,
 heading-independent, no calibration needed.
 
 **Failed approaches** (historical):
@@ -197,7 +197,7 @@ heading-independent, no calibration needed.
 
 ## Stopping System
 
-### Tilt-Based MPC Braking (during auto-leveling)
+### Tilt-Based Braking (during auto-leveling)
 - When keys released, tilt auto-levels -> desired velocity shrinks
 - Sim model follows tilt -> sim decelerates
 - Actual overshoots sim -> negative position error -> opposing force
@@ -250,9 +250,9 @@ naturally, preventing violent force spikes from instant velocity mismatch.
 **Threshold scaling**: `2.0° × (TARGET_FPS / actualFPS)` prevents triggering during normal
 A/D rotation at low FPS.
 
-**Heading interaction**: The forward direction is always extracted from `_ourQuat`'s rotation
-matrix. When yaw changes (A/D rotation or re-anchor), the forward direction updates
-automatically from the matrix — no separate heading calibration needed.
+**Heading interaction**: The forward direction is always extracted from `composeOrientation()`
+(`yawQ * _tiltQuat`) rotation matrix. When yaw changes (A/D rotation or re-anchor), the
+forward direction updates automatically from the matrix — no separate heading calibration needed.
 
 ---
 
@@ -612,8 +612,9 @@ annotations. `HEFContext.build()` constructs `HEFCtx` (framework→engine). Engi
 for IDE autocompletion, `CTX_FIELDS` for runtime validation, and `new()` constructors. `HEF`
 prefix distinguishes from PZ types.
 
-**Two-Phase Frame** — OnTick: `HEFContext.build()` → engine `update(ctx)`. OnTickEvenPaused:
-`HEFCorrectionCtx.build()` → engine `applyCorrectionForces(cctx)` (optional, for 0-frame delay).
+**Two-Phase Frame** — Phase 1 (OnTickEvenPaused, before physics): `HEFCorrectionCtx.build()`
+→ engine `applyCorrectionForces(cctx)` (optional, 0-frame delay horizontal corrections).
+Phase 2 (OnTick, after physics): `HEFContext.build()` → engine `update(ctx)` (main flight).
 Each phase has its own typed context with fresh reads.
 
 **Framework-Owned Reads** — Velocity, position, mass, physics timing, keyboard, and wall
@@ -691,7 +692,7 @@ Ground and engine-off paths set `_flightState = inactive` (triggers re-init next
 - **Descent from hover**: 5/8 descents perfectly clean (zero horizontal thrust). Noise floor effective.
 - **Thrust direction clamping**: 30° max lead angle works — delta locked at exactly 30° during sustained turns.
 - **Sim virtual inertia**: Sim velocity blends at 5%/frame. Eliminates instant velocity mismatch on re-anchor.
-- **Single center wheel**: Dampener bypass works (wheelCount=1 > 0). Reduced torque source.
+- **Invisible 4-wheel override**: Dampener bypass works (wheelCount=4 > 0). Zero suspension/friction.
 
 **Needs re-verification after HEF restructuring:**
 - Hover stability (Quaternion model swap: CustomQuaternion → Models/Quaternion)
