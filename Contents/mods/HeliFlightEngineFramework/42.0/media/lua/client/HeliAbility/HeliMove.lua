@@ -120,11 +120,9 @@ local function helicopterMovementUpdate()
         _dualPathActive = false
         if curr_z > nowMaxZ then
             local fallSpeed = HeliConfig.get("fall")
-            local mass = HeliUtil.toLuaNum(vehicle:getMass())
             local Kp = HeliConfig.get("kp")
-            local subSteps = HeliForceAdapter.getSubStepsThisFrame()
-            if subSteps > 0 then
-                local fy = Kp * (-fallSpeed - velY) * mass * subSteps
+            if ctx.subSteps > 0 then
+                local fy = Kp * (-fallSpeed - velY) * ctx.mass * ctx.subSteps
                 if fy ~= 0 then
                     HeliForceAdapter.applyForceImmediate(vehicle, 0, fy, 0)
                 end
@@ -238,7 +236,7 @@ local function helicopterMovementUpdate()
         })
 
         HeliDebug.periodicLog(_flightState, curr_z, r.desiredVelX or 0, r.desiredVelZ or 0,
-            r.simVelX or 0, r.simVelZ or 0, r.errX or 0, r.errZ or 0, r.targetVelY or 0, keyStr)
+            r.simVelX or 0, r.simVelZ or 0, r.errX or 0, r.errZ or 0, velY, keyStr)
 
         if HeliDebug.snapRequested then
             HeliDebug.snapRequested = false
@@ -346,7 +344,9 @@ local function helicopterCorrectionUpdate()
     if not vehicle then return end
     if not GetHeliType(vehicle) then return end
 
-    HeliSimService.applyCorrectionForces(vehicle)
+    --- @type HEFCorrectionCtx
+    local cctx = HEFCorrectionCtx.build(vehicle)
+    HeliSimService.applyCorrectionForces(cctx)
 end
 
 -------------------------------------------------------------------------------------

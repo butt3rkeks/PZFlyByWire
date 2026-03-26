@@ -77,13 +77,11 @@ end
 --- @return HEFUpdateResult
 function FBWEngine.update(ctx)
     local vehicle = ctx.vehicle
-    local playerObj = ctx.playerObj
     local keys = ctx.keys
     local fpsMultiplier = ctx.fpsMultiplier
     local heliType = ctx.heliType
     local curr_z = ctx.curr_z
     local nowMaxZ = ctx.nowMaxZ
-    local tempVector2 = ctx.tempVector2
     local blocked = ctx.blocked
 
     local toLuaNum = HeliUtil.toLuaNum
@@ -156,8 +154,8 @@ function FBWEngine.update(ctx)
     totalVelX, totalVelZ, totalSpeed = FBWFilters.clampSpeed(totalVelX, totalVelZ, maxHSpeed)
 
     -- Direction clamping: need movement angle from position delta
-    local posX = toLuaNum(vehicle:getX())
-    local posZ = toLuaNum(vehicle:getY())
+    local posX = ctx.posX
+    local posZ = ctx.posZ
     if _prevPosX and totalSpeed > 0.1 then
         local dx = posX - _prevPosX
         local dz = posZ - _prevPosZ
@@ -201,7 +199,7 @@ function FBWEngine.update(ctx)
         FBWEngine.initFlight(vehicle)
     end
 
-    local fps = math.max(getAverageFPS(), HeliConfig.MIN_FPS)
+    local fps = ctx.fps
     local dt = 1.0 / fps
     local baseBrake = HeliConfig.get("brake")
     local effectiveInertia = baseBrake * (hasHInput and HeliConfig.get("accel") or HeliConfig.get("decel"))
@@ -212,9 +210,7 @@ function FBWEngine.update(ctx)
     -- 13. Heading re-anchor check (skip in FA-off — coast must survive turns)
     if not _flightAssistOff then
         if FBWYawController.checkHeadingReanchor(fps) then
-            local actualX = toLuaNum(vehicle:getX())
-            local actualZ = toLuaNum(vehicle:getY())
-            FBWRawSim.snapPosition(actualX, actualZ)
+            FBWRawSim.snapPosition(posX, posZ)
             FBWErrorTracker.clearHistory()
         end
     end
@@ -254,13 +250,11 @@ function FBWEngine.update(ctx)
         (hasHInput or errMag > HeliConfig.DUAL_PATH_ERROR_THRESHOLD or hSpeedActual > HeliConfig.DUAL_PATH_SPEED_THRESHOLD)
 
     -- 19. Vertical thrust
-    local mass = toLuaNum(vehicle:getMass())
     local Kp = HeliConfig.get("kp")
     local gravity = HeliConfig.get("gravity")
-    local subSteps, physicsDelta = HeliForceAdapter.getSubStepsThisFrame()
     local fy = FBWForceComputer.computeThrustForce(
-        targetVelY, toLuaNum(velY), mass, Kp, gravity,
-        subSteps, physicsDelta, gravComp)
+        targetVelY, velY, ctx.mass, Kp, gravity,
+        ctx.subSteps, ctx.physicsDelta, gravComp)
     if fy ~= 0 then
         HeliForceAdapter.applyForceImmediate(vehicle, 0, fy, 0)
     end
@@ -300,8 +294,7 @@ end
 function FBWEngine.updateGround(ctx)
     local vehicle = ctx.vehicle
     local keys = ctx.keys
-    local toLuaNum = HeliUtil.toLuaNum
-
+    local mass = ctx.mass
     local velX = ctx.velX
     local velY = ctx.velY
     local velZ = ctx.velZ
@@ -311,13 +304,11 @@ function FBWEngine.updateGround(ctx)
 
     if keys.w and vehicle:getRemainingFuelPercentage() > 0 then
         vehicle:setPhysicsActive(true)
-        local mass = toLuaNum(vehicle:getMass())
         local ascendSpeed = HeliConfig.get("ascend")
         local gravity = HeliConfig.get("gravity")
-        local subSteps = HeliForceAdapter.getSubStepsThisFrame()
-        if subSteps > 0 then
+        if ctx.subSteps > 0 then
             local Kp = HeliConfig.get("kp")
-            local liftFy = Kp * (ascendSpeed - velY) * mass * subSteps + mass * gravity * subSteps
+            local liftFy = Kp * (ascendSpeed - velY) * mass * ctx.subSteps + mass * gravity * ctx.subSteps
             HeliForceAdapter.applyForceImmediate(vehicle,
                 -velX * mass * HeliConfig.GROUND_VELOCITY_KILL,
                 liftFy,
@@ -325,7 +316,6 @@ function FBWEngine.updateGround(ctx)
         end
         liftoff = true
     elseif groundVelMag > HeliConfig.GROUND_VELOCITY_THRESHOLD then
-        local mass = toLuaNum(vehicle:getMass())
         HeliForceAdapter.applyForceImmediate(vehicle,
             -velX * mass * HeliConfig.GROUND_VELOCITY_KILL,
             -velY * mass * HeliConfig.GROUND_VELOCITY_KILL,
@@ -341,25 +331,19 @@ end
 -------------------------------------------------------------------------------------
 -- IFlightEngine: applyCorrectionForces(vehicle) — 0-frame delay path
 -------------------------------------------------------------------------------------
-function FBWEngine.applyCorrectionForces(vehicle)
-    local toLuaNum = HeliUtil.toLuaNum
-    local mass = toLuaNum(vehicle:getMass())
-
+--- @param cctx HEFCorrectionCtx
+function FBWEngine.applyCorrectionForces(cctx)
     local errX, errZ, errRateX, errRateZ = FBWErrorTracker.getPositionError()
     local errMag = math.sqrt(errX * errX + errZ * errZ)
-
-    local vx, _, vz = HeliVelocityAdapter.getVelocity(vehicle)
-    local hvx = toLuaNum(vx)
-    local hvz = toLuaNum(vz)
 
     local fx, fz = FBWForceComputer.computeCorrectionForce(
         errX, errZ, errRateX, errRateZ, errMag,
         HeliConfig.get("pgain"), HeliConfig.get("dgain"),
-        hvx, hvz, mass, HeliConfig.VEL_FORCE_FACTOR,
+        cctx.velX, cctx.velZ, cctx.mass, HeliConfig.VEL_FORCE_FACTOR,
         HeliConfig.get("fstopgain"), _flightAssistOff,
         HeliConfig.FA_OFF_DEADZONE, HeliConfig.FA_OFF_MIN_DAMPING_SPEED)
 
-    HeliForceAdapter.applyForceImmediate(vehicle, fx, 0, fz)
+    HeliForceAdapter.applyForceImmediate(cctx.vehicle, fx, 0, fz)
 end
 
 -------------------------------------------------------------------------------------

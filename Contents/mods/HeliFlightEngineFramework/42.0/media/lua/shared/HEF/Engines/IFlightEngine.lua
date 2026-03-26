@@ -2,14 +2,20 @@
     IFlightEngine — Interface definition + engine registry
 
     Every flight engine must implement the required methods listed below.
-    At register time, all methods are validated — missing method = immediate error.
+    Optional methods are available for engines that need them — the framework
+    checks for their existence before calling.
+
+    At register time, required methods are validated — missing = immediate error.
+    Optional methods are listed for discoverability but not enforced.
 
     Registry:
       IFlightEngine.register("FBW", engineTable) — validates + stores
       IFlightEngine.get("FBW") — retrieves by name
 
-    Context contract: see HEFContext.lua for @class HEFCtx and CTX_FIELDS.
-    Result contracts: see @class annotations below, adjacent to each method group.
+    Context contracts:
+      HEFContext.lua        — @class HEFCtx + CTX_FIELDS (OnTick phase)
+      HEFCorrectionCtx.lua  — @class HEFCorrectionCtx + CTX_FIELDS (OnTickEvenPaused phase)
+    Result contracts: see HEFUpdateResult.lua, HEFGroundResult.lua, etc.
 ]]
 
 IFlightEngine = {}
@@ -26,7 +32,6 @@ IFlightEngine.REQUIRED_METHODS = {
     -- Frame update (see HEFUpdateResult.lua, HEFGroundResult.lua)
     "update",                -- (ctx:HEFCtx) → HEFUpdateResult
     "updateGround",          -- (ctx:HEFCtx) → HEFGroundResult
-    "applyCorrectionForces", -- (vehicle:BaseVehicle) — 0-frame delay force path
     -- Lifecycle
     "resetFlightState",      -- ()
     "initFlight",            -- (vehicle:BaseVehicle)
@@ -47,6 +52,23 @@ IFlightEngine.REQUIRED_METHODS = {
     "executeCommand",        -- (name:string, argsString:string) → string
     -- Metadata (see HEFEngineInfo.lua)
     "getInfo",               -- () → HEFEngineInfo
+}
+
+-------------------------------------------------------------------------------------
+-- Optional engine methods
+--
+-- NOT validated at register time. Framework checks existence before calling.
+-- Listed here for discoverability — engine authors should know these exist.
+-------------------------------------------------------------------------------------
+
+IFlightEngine.OPTIONAL_METHODS = {
+    -- 0-frame delay correction path (see HEFCorrectionCtx.lua)
+    -- Called on OnTickEvenPaused (before physics step) when update() returned
+    -- dualPathActive=true. Allows horizontal correction forces to be applied
+    -- with zero frame delay instead of the 1-frame delay of the OnTick path.
+    -- Engines that don't need dual-path timing can omit this — just return
+    -- dualPathActive=false from update() and the framework never calls it.
+    "applyCorrectionForces", -- (cctx:HEFCorrectionCtx)
 }
 
 -------------------------------------------------------------------------------------

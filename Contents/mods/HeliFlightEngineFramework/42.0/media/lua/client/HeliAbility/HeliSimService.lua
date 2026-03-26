@@ -34,10 +34,12 @@ function HeliSimService.updateGround(ctx)
     return _activeEngine.updateGround(ctx)
 end
 
---- @param vehicle BaseVehicle
-function HeliSimService.applyCorrectionForces(vehicle)
+--- @param cctx HEFCorrectionCtx
+function HeliSimService.applyCorrectionForces(cctx)
     if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.applyCorrectionForces(vehicle)
+    if _activeEngine.applyCorrectionForces then
+        return _activeEngine.applyCorrectionForces(cctx)
+    end
 end
 
 -- Lifecycle
