@@ -27,6 +27,9 @@ local _smoothVelZ = 0
 -- Position-delta speed (unified tracker)
 local _posDeltaSpeed = 0
 
+-- Cached raw vertical velocity (for read-only getLastVelocity)
+local _lastRawVelY = 0
+
 -------------------------------------------------------------------------------------
 -- Public API
 -------------------------------------------------------------------------------------
@@ -79,8 +82,16 @@ function HeliVelocityAdapter.getVelocity(vehicle)
     _prevPosX = posX
     _prevPosZ = posZ
     _prevFPS = fps
+    _lastRawVelY = rawVy
 
     return _smoothVelX, rawVy, _smoothVelZ
+end
+
+--- Get the last-computed velocity without mutating adapter state.
+--- Safe to call from debug commands or any non-update code path.
+--- @return number smoothVelX, number lastRawVelY, number smoothVelZ
+function HeliVelocityAdapter.getLastVelocity()
+    return _smoothVelX, _lastRawVelY, _smoothVelZ
 end
 
 --- Get position-delta speed (m/s). Ground truth, immune to stale Bullet reads.
@@ -97,4 +108,5 @@ function HeliVelocityAdapter.resetSmoothing()
     _smoothVelX = 0
     _smoothVelZ = 0
     _posDeltaSpeed = 0
+    _lastRawVelY = 0
 end

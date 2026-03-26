@@ -140,7 +140,7 @@ commands["vel"] = function(_)
         showError("Not in a vehicle.")
         return
     end
-    local vx, vy, vz = HeliVelocityAdapter.getVelocity(vehicle)
+    local vx, vy, vz = HeliVelocityAdapter.getLastVelocity()
     showValue(string.format("Bullet velocity: X=%.3f  Y(height)=%.3f  Z=%.3f",
         HeliUtil.toLuaNum(vx), HeliUtil.toLuaNum(vy), HeliUtil.toLuaNum(vz)))
     showValue(string.format("Mass=%.0f  FPS=%.0f  SubSteps=%.2f",
