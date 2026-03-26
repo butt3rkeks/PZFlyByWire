@@ -30,13 +30,17 @@ function FBWRawSim.reset(posX, posZ)
 end
 
 --- Advance simulation one step: blend velocity toward desired, then integrate position.
+--- Uses framerate-independent exponential smoothing: at TARGET_FPS, alpha == inertia.
+--- At higher FPS, each frame applies proportionally less change so convergence rate
+--- is consistent regardless of frame rate.
 --- @param desiredVelX number Target X velocity from tilt
 --- @param desiredVelZ number Target Z velocity from tilt
 --- @param dt number Time step (1/fps)
 --- @param inertia number Pre-computed inertia rate (brake * accel or brake * decel)
 function FBWRawSim.advance(desiredVelX, desiredVelZ, dt, inertia)
-    _simVelX = _simVelX + (desiredVelX - _simVelX) * inertia
-    _simVelZ = _simVelZ + (desiredVelZ - _simVelZ) * inertia
+    local alpha = 1 - (1 - inertia) ^ (dt * HeliConfig.TARGET_FPS)
+    _simVelX = _simVelX + (desiredVelX - _simVelX) * alpha
+    _simVelZ = _simVelZ + (desiredVelZ - _simVelZ) * alpha
     _simPosX = _simPosX + _simVelX * dt
     _simPosZ = _simPosZ + _simVelZ * dt
 end
