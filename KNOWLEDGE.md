@@ -290,30 +290,36 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 
 ## Tunable Parameters
 
-### Via `/hef` Chat Commands
+There are two kinds of parameters, with different persistence:
 
-**Engine tunables** (auto-discovered from active engine's `getTunables()`):
+### Engine Tunables (session-only, lost on game exit)
+
+Set via `/hef <name> <value>`. Auto-discovered from the active engine's `getTunables()`.
+These are runtime overrides for experimentation — they do NOT persist across sessions.
+
 | Command | Default | Description |
 |---------|---------|-------------|
 | `/hef pgain <v>` | 7.0 | Position error P gain |
 | `/hef dgain <v>` | 0.3 | Position error D gain (damping) |
-| `/hef maxerr <v>` | 10.0 | Max position error (tanh saturation, meters) |
+| `/hef maxerr <v>` | 10.0 | Max position error saturation (meters) |
 | `/hef yawgain <v>` | 0.9 | Yaw correction gain |
 | `/hef autolevel <v>` | 1.0 | Auto-leveling speed multiplier |
 | `/hef fstopgain <v>` | 0.3 | Velocity damping strength (0.3=smooth, 0.8=snappy) |
 
-**Sandbox params** (from HeliConfig, persisted per-save):
-| Command | Default | Description |
-|---------|---------|-------------|
-| `/hef gravity <v>` | 9.80 | Gravity compensation estimate |
-| `/hef kp <v>` | 8.0 | Vertical PD gain |
-| `/hef hspeed <v>` | 450 | Max horizontal speed (m/s at max tilt) |
-| `/hef ascend <v>` | 8.0 | Ascend speed (Bullet Y/s) |
-| `/hef descend <v>` | 14.0 | Descend speed |
-| `/hef fall <v>` | 24.5 | Engine-off fall speed |
-| `/hef deadfall <v>` | 35.0 | Engine-dead fall speed |
+### Sandbox Parameters (persisted per-save, set in sandbox options UI)
 
-**Note**: Existing saves retain old sandbox defaults. Use `/hef` commands to override per-session.
+Defined in `sandbox-options.txt`, stored in the save file. `/hef` can override them
+for the current session, but the sandbox default is restored on game restart.
+
+| Sandbox field (FBW.*) | `/hef` shorthand | Default | Description |
+|----------------------|-----------------|---------|-------------|
+| GravityEstimate | gravity | 9.80 | Gravity compensation estimate |
+| ResponsivenessGain | kp | 8.0 | Vertical PD gain |
+| MaxHorizontalSpeed | hspeed | 450 | Max horizontal speed (m/s at max tilt) |
+| AscendSpeed | ascend | 8.0 | Ascend speed (Bullet Y/s) |
+| DescendSpeed | descend | 14.0 | Descend speed |
+| GravityFallSpeed | fall | 24.5 | Engine-off fall speed |
+| EngineDeadFallSpeed | deadfall | 35.0 | Engine-dead fall speed |
 
 ---
 
@@ -351,8 +357,16 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 **`HEFGroundResult.lua`** — Mandatory return from `updateGround(ctx)` (`@class` + `new()`)
 **`HEFTunable.lua`** — Return element from `getTunables()` (`@class` + `new()`)
 **`HEFSandboxOptions.lua`** — Return from `getSandboxOptions()` (`@class` + `new()`, includes `HEFSandboxOption`)
+- `namespace`: string — sandbox namespace (e.g. `"FBW"` → `SandboxVars.FBW.*`)
+- `options[]`: field, type (`"double"`/`"integer"`/`"boolean"`/`"enum"`), default, min, max, desc
+- **Important**: `getSandboxOptions()` is metadata for the debug/chat UI. Actual sandbox persistence
+  requires matching entries in `sandbox-options.txt` (PZ's static DSL). These two systems must stay in sync.
+
 **`HEFCommand.lua`** — Return element from `getCommands()` (`@class` + `new()`)
+- `name`: string (e.g. `"recalibrate"`), `description`: string, `args`: string (e.g. `""` or `"<degrees>"`)
+
 **`HEFEngineInfo.lua`** — Return from `getInfo()` (`@class` + `new()`)
+- `name`: string (engine identifier, e.g. `"FBW"`), `version`: string (e.g. `"1.0"`), `description`: string
 
 All type classes have EmmyLua annotations for IDE autocompletion. `HEF` prefix distinguishes them from PZ types.
 
@@ -471,8 +485,7 @@ All type classes have EmmyLua annotations for IDE autocompletion. `HEF` prefix d
 ## File Structure
 
 ```
-HeliFlightEngineFramework/
-  KNOWLEDGE.md
+HeliFlightEngineFramework/          ← project root (KNOWLEDGE.md, README.md, workshop.txt here)
   Contents/mods/HeliFlightEngineFramework/
     mod.info
     42.0/
@@ -713,7 +726,7 @@ Ground and engine-off paths set `_flightState = inactive` (triggers re-init next
 
 **Phase 1 — Layered restructuring**: Entangled modules (HeliRotation, HeliDirection,
 HeliSimulation, HeliForceController) restructured into Util → Core → Adapters → Flight → Debug layers.
-Plan: `C:\Users\butt3rkeks\.claude\plans\fluttering-discovering-spark.md`
+Plan: fluttering-discovering-spark (Claude Code session)
 
 **Phase 2 — HEF framework**: Core/Flight modules moved into `Engines/FBW/` (strategy pattern).
 IFlightEngine interface (required + optional methods), thin HeliSimService dispatcher,
@@ -721,7 +734,7 @@ Models/ shared data structures, typed data contracts (HEFCtx, HEFCorrectionCtx, 
 Framework owns all per-frame reads (velocity, position, mass, terrain, keyboard, physics timing)
 via `HEFContext.build()` — engines receive ctx, never call adapters directly.
 Each engine owns its sandbox namespace. EmmyLua annotations on all engine-facing surfaces.
-Plan: `C:\Users\butt3rkeks\.claude\plans\nifty-munching-pearl.md`
+Plan: nifty-munching-pearl (Claude Code session)
 
 Benefits:
 - Swap entire flight engine via sandbox setting (`HEF.FlightEngine` enum)
