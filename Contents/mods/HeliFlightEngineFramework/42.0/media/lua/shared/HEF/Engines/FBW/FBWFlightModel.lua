@@ -27,8 +27,9 @@ FBWFlightModel = {}
 -- @param curr_z number Current altitude (z-levels)
 -- @param freeMode boolean Flight assist off
 -- @param keys table Key state table { w, s, ... }
+-- @param velY number Current vertical velocity (Lua number, already coerced)
 -------------------------------------------------------------------------------------
-function FBWFlightModel.computeVerticalTarget(vehicle, curr_z, freeMode, keys)
+function FBWFlightModel.computeVerticalTarget(vehicle, curr_z, freeMode, keys, velY)
     local ascendSpeed      = HeliConfig.get("ascend")
     local descendSpeed     = HeliConfig.get("descend")
     local gravityFallSpeed = HeliConfig.get("fall")
@@ -63,8 +64,7 @@ function FBWFlightModel.computeVerticalTarget(vehicle, curr_z, freeMode, keys)
 
     -- 5. No vertical input
     if freeMode then
-        local _, curVelY, _ = HeliVelocityAdapter.getVelocity(vehicle)
-        return HeliUtil.toLuaNum(curVelY), true, false, false
+        return velY, true, false, false
     end
 
     -- Normal mode: hover

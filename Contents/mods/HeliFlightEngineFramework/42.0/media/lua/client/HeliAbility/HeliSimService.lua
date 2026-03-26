@@ -19,27 +19,35 @@ function HeliSimService._resolveEngine()
 end
 
 -- Frame updates
+
+--- @param ctx HEFCtx
+--- @return HEFUpdateResult
 function HeliSimService.update(ctx)
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.update(ctx)
 end
 
+--- @param ctx HEFCtx
+--- @return HEFGroundResult
 function HeliSimService.updateGround(ctx)
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.updateGround(ctx)
 end
 
+--- @param vehicle BaseVehicle
 function HeliSimService.applyCorrectionForces(vehicle)
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.applyCorrectionForces(vehicle)
 end
 
 -- Lifecycle
+
 function HeliSimService.resetFlightState()
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.resetFlightState()
 end
 
+--- @param vehicle BaseVehicle
 function HeliSimService.initFlight(vehicle)
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.initFlight(vehicle)
@@ -50,61 +58,81 @@ function HeliSimService.tickWarmup()
     return _activeEngine.tickWarmup()
 end
 
+--- @return boolean
 function HeliSimService.isWarmedUp()
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.isWarmedUp()
 end
 
 -- Tunables
+
+--- @return HEFTunable[]
 function HeliSimService.getTunables()
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.getTunables()
 end
 
+--- @param name string
+--- @return number
 function HeliSimService.getTunable(name)
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.getTunable(name)
 end
 
+--- @param name string
+--- @param value number
 function HeliSimService.setTunable(name, value)
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.setTunable(name, value)
 end
 
 -- Sandbox options
+
+--- @return HEFSandboxOptions
 function HeliSimService.getSandboxOptions()
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.getSandboxOptions()
 end
 
 -- Debug
+
+--- @return table
 function HeliSimService.getDebugState()
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.getDebugState()
 end
 
+--- @return string[]
 function HeliSimService.getDebugColumns()
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.getDebugColumns()
 end
 
+--- @return number
 function HeliSimService.getIntendedYaw()
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.getIntendedYaw()
 end
 
 -- Commands
+
+--- @return HEFCommand[]
 function HeliSimService.getCommands()
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.getCommands()
 end
 
+--- @param name string
+--- @param args string
+--- @return string
 function HeliSimService.executeCommand(name, args)
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.executeCommand(name, args)
 end
 
 -- Metadata
+
+--- @return HEFEngineInfo
 function HeliSimService.getInfo()
     if not _activeEngine then HeliSimService._resolveEngine() end
     return _activeEngine.getInfo()

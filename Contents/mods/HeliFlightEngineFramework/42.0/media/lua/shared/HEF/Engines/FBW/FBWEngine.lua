@@ -73,6 +73,8 @@ end
 -------------------------------------------------------------------------------------
 -- IFlightEngine: update(ctx) — one frame of airborne flight
 -------------------------------------------------------------------------------------
+--- @param ctx HEFCtx
+--- @return HEFUpdateResult
 function FBWEngine.update(ctx)
     local vehicle = ctx.vehicle
     local playerObj = ctx.playerObj
@@ -82,6 +84,7 @@ function FBWEngine.update(ctx)
     local curr_z = ctx.curr_z
     local nowMaxZ = ctx.nowMaxZ
     local tempVector2 = ctx.tempVector2
+    local blocked = ctx.blocked
 
     local toLuaNum = HeliUtil.toLuaNum
     local freeMode = vehicle:getModData().AutoBalance == true
@@ -97,7 +100,7 @@ function FBWEngine.update(ctx)
 
     -- 2. FBWInputProcessor: keys → rotation deltas
     local ax, ay, az, isRotating = FBWInputProcessor.computeRotationDeltas(
-        keys, fpsMultiplier, heliType, playerObj, vehicle, tempVector2, freeMode)
+        keys, fpsMultiplier, heliType, blocked, freeMode)
 
     -- 3. Apply tilt + yaw to FBWOrientation
     FBWOrientation.applyTilt(ax, az)
@@ -117,7 +120,7 @@ function FBWEngine.update(ctx)
     local angleZ = FBWOrientation.getBodyPitch()
     local angleX = FBWOrientation.getBodyRoll()
 
-    -- 7. Wall pre-blocking: per-axis collision checks, zero blocked deviations
+    -- 7. Wall pre-blocking: use framework-provided blocked directions
     local angle_90 = math.rad(90)
     local pitchDev = angleZ - angle_90
     local rollDev = angleX - angle_90
@@ -129,19 +132,11 @@ function FBWEngine.update(ctx)
     local rollBlocked = false
 
     if math.abs(cosZ) > HeliConfig.DIRECTION_COS_THRESHOLD then
-        if cosZ < 0 then
-            pitchBlocked = HeliTerrainUtil.isBlocked(playerObj, "UP", vehicle, tempVector2)
-        else
-            pitchBlocked = HeliTerrainUtil.isBlocked(playerObj, "DOWN", vehicle, tempVector2)
-        end
+        pitchBlocked = (cosZ < 0) and blocked.up or blocked.down
         if pitchBlocked then isBlockedHit = true end
     end
     if math.abs(cosX) > HeliConfig.DIRECTION_COS_THRESHOLD then
-        if cosX < 0 then
-            rollBlocked = HeliTerrainUtil.isBlocked(playerObj, "RIGHT", vehicle, tempVector2)
-        else
-            rollBlocked = HeliTerrainUtil.isBlocked(playerObj, "LEFT", vehicle, tempVector2)
-        end
+        rollBlocked = (cosX < 0) and blocked.right or blocked.left
         if rollBlocked then isBlockedHit = true end
     end
 
@@ -190,8 +185,7 @@ function FBWEngine.update(ctx)
 
     if freeMode and noInput then
         local _, _, svx, svz = FBWRawSim.getState()
-        local vx, _, vz = HeliVelocityAdapter.getVelocity(vehicle)
-        local actualSpeed = math.sqrt(toLuaNum(vx) * toLuaNum(vx) + toLuaNum(vz) * toLuaNum(vz))
+        local actualSpeed = math.sqrt(ctx.velX * ctx.velX + ctx.velZ * ctx.velZ)
         if actualSpeed < HeliConfig.FA_OFF_DEADZONE then
             desiredHX, desiredHZ = 0, 0
             FBWEngine.initFlight(vehicle)
@@ -236,15 +230,14 @@ function FBWEngine.update(ctx)
     local simPosX, simPosZ, simVelX, simVelZ = FBWRawSim.getState()
     FBWErrorTracker.record(posX, posZ, simPosX, simPosZ)
 
-    -- 16. Read velocity for vertical + dual-path
-    local rawVelX, rawVelY, rawVelZ = HeliVelocityAdapter.getVelocity(vehicle)
-    local velX = toLuaNum(rawVelX)
-    local velY = toLuaNum(rawVelY)
-    local velZ = toLuaNum(rawVelZ)
+    -- 16. Velocity from framework ctx (read once per frame by HeliMove)
+    local velX = ctx.velX
+    local velY = ctx.velY
+    local velZ = ctx.velZ
 
     -- 17. Vertical target (absorbed from HeliMove)
     local targetVelY, gravComp, vBraking, engineDead = FBWFlightModel.computeVerticalTarget(
-        vehicle, curr_z, freeMode, keys)
+        vehicle, curr_z, freeMode, keys, velY)
 
     -- Landing zone taper
     if targetVelY < 0 and curr_z < nowMaxZ + HeliConfig.LANDING_ZONE_HEIGHT then
@@ -302,15 +295,16 @@ end
 -------------------------------------------------------------------------------------
 -- IFlightEngine: updateGround(ctx) — ground behavior
 -------------------------------------------------------------------------------------
+--- @param ctx HEFCtx
+--- @return HEFGroundResult
 function FBWEngine.updateGround(ctx)
     local vehicle = ctx.vehicle
     local keys = ctx.keys
     local toLuaNum = HeliUtil.toLuaNum
 
-    local rawVelX, rawVelY, rawVelZ = HeliVelocityAdapter.getVelocity(vehicle)
-    local velX = toLuaNum(rawVelX)
-    local velY = toLuaNum(rawVelY)
-    local velZ = toLuaNum(rawVelZ)
+    local velX = ctx.velX
+    local velY = ctx.velY
+    local velZ = ctx.velZ
     local groundVelMag = math.abs(velX) + math.abs(velY) + math.abs(velZ)
 
     local liftoff = false

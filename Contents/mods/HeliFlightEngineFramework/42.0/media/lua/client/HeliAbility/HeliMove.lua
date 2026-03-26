@@ -109,6 +109,20 @@ local function helicopterMovementUpdate()
     -- Landing surface detection
     local nowMaxZ = HeliTerrainUtil.getNowMaxZ(playerObj, curr_z)
 
+    -- Read velocity once per frame (framework-owned, avoids stale-read side effects)
+    local rawVelX, rawVelY, rawVelZ = HeliVelocityAdapter.getVelocity(vehicle)
+    local velX = HeliUtil.toLuaNum(rawVelX)
+    local velY = HeliUtil.toLuaNum(rawVelY)
+    local velZ = HeliUtil.toLuaNum(rawVelZ)
+
+    -- Pre-compute wall blocking (framework-owned world geometry)
+    local blocked = {
+        up    = HeliTerrainUtil.isBlocked(playerObj, "UP", vehicle, tempVector2),
+        down  = HeliTerrainUtil.isBlocked(playerObj, "DOWN", vehicle, tempVector2),
+        left  = HeliTerrainUtil.isBlocked(playerObj, "LEFT", vehicle, tempVector2),
+        right = HeliTerrainUtil.isBlocked(playerObj, "RIGHT", vehicle, tempVector2),
+    }
+
     -- Build context table (passed to engine)
     local ctx = {
         vehicle = vehicle,
@@ -119,6 +133,10 @@ local function helicopterMovementUpdate()
         curr_z = curr_z,
         nowMaxZ = nowMaxZ,
         tempVector2 = tempVector2,
+        velX = velX,
+        velY = velY,
+        velZ = velZ,
+        blocked = blocked,
     }
 
     -- Flight state initialization (first frame entering flight)
@@ -146,10 +164,7 @@ local function helicopterMovementUpdate()
         _dualPathActive = false
         if curr_z > nowMaxZ then
             local fallSpeed = HeliConfig.get("fall")
-            local toLuaNum = HeliUtil.toLuaNum
-            local rawVelX, rawVelY, rawVelZ = HeliVelocityAdapter.getVelocity(vehicle)
-            local velY = toLuaNum(rawVelY)
-            local mass = toLuaNum(vehicle:getMass())
+            local mass = HeliUtil.toLuaNum(vehicle:getMass())
             local Kp = HeliConfig.get("kp")
             local subSteps = HeliForceAdapter.getSubStepsThisFrame()
             if subSteps > 0 then
@@ -159,8 +174,7 @@ local function helicopterMovementUpdate()
                 end
             end
             if HeliDebug.logEnabled then
-                HeliDebug.logEngineOff(curr_z, fallSpeed,
-                    toLuaNum(rawVelX), toLuaNum(rawVelY), toLuaNum(rawVelZ))
+                HeliDebug.logEngineOff(curr_z, fallSpeed, velX, velY, velZ)
             end
         end
         return
@@ -276,8 +290,11 @@ local function helicopterMovementUpdate()
     end
 
     -- === FLIGHT DATA RECORDER ===
+    -- Read raw Bullet velocity directly (don't call getVelocity() again —
+    -- it has stateful side effects that corrupt stale-read detection).
     if HeliDebug.isRecording() then
         local dbg = HeliSimService.getDebugState()
+        local recVel = vehicle:getLinearVelocity(Vector3f.new())
         HeliDebug.writeFlightFrame({
             ms       = getTimestampMs(),
             state    = _flightState,
@@ -285,9 +302,9 @@ local function helicopterMovementUpdate()
             aX       = HeliUtil.toLuaNum(vehicle:getX()),
             aZ       = HeliUtil.toLuaNum(vehicle:getY()),
             alt      = curr_z,
-            vX       = HeliUtil.toLuaNum(HeliVelocityAdapter.getVelocity(vehicle)),
-            vY       = 0,
-            vZ       = 0,
+            vX       = HeliUtil.toLuaNum(recVel:x()),
+            vY       = HeliUtil.toLuaNum(recVel:y()),
+            vZ       = HeliUtil.toLuaNum(recVel:z()),
             sX       = dbg.simPosX or 0,
             sZ       = dbg.simPosZ or 0,
             svX      = dbg.simVelX or 0,

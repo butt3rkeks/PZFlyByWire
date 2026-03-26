@@ -7,8 +7,7 @@
     the Bullet read disagrees by > 3x.
 
     Also provides position-delta speed (ground truth, immune to stale reads).
-    Unifies position-delta tracking that was previously duplicated in
-    HeliSimulation (for snap guard) and HeliForceController (for velocity).
+    Unifies position-delta tracking into a single adapter.
 ]]
 
 HeliVelocityAdapter = {}
