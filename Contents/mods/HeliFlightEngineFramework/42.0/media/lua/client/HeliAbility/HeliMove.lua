@@ -78,7 +78,17 @@ local function helicopterMovementUpdate()
     -- Prevent CarController speed regulation from fighting our forces.
     vehicle:setMaxSpeed(HeliConfig.MAX_SPEED_OVERRIDE)
 
+    -- Flight state initialization (first frame entering flight)
+    -- Must run BEFORE HEFContext.build() so velocity adapter is reset before first read.
+    if _flightState == STATE_INACTIVE then
+        HeliSimService.resetFlightState()
+        HeliSimService.initFlight(vehicle)
+        for _, fn in ipairs(_initCallbacks) do fn(vehicle) end
+        _flightState = STATE_WARMUP
+    end
+
     -- Build per-frame context (keys, velocity, terrain, wall blocking)
+    -- Runs after reset so HeliVelocityAdapter starts clean on first flight frame.
     --- @type HEFCtx
     local ctx = HEFContext.build(vehicle, playerObj, tempVector2)
     local curr_z = ctx.curr_z
@@ -92,14 +102,6 @@ local function helicopterMovementUpdate()
 
     -- Ghost mode
     HeliAuxiliary.updateGhostMode(playerObj, curr_z)
-
-    -- Flight state initialization (first frame entering flight)
-    if _flightState == STATE_INACTIVE then
-        HeliSimService.resetFlightState()
-        HeliSimService.initFlight(vehicle)
-        for _, fn in ipairs(_initCallbacks) do fn(vehicle) end
-        _flightState = STATE_WARMUP
-    end
 
     -- Warmup: re-anchor sim to actual position each frame until physics stabilizes.
     if _flightState == STATE_WARMUP then
@@ -223,7 +225,7 @@ local function helicopterMovementUpdate()
             posErrorZ = r.errZ,
             posErrorRateX = r.errRateX,
             posErrorRateZ = r.errRateZ,
-            savedVelY = r.targetVelY or 0,
+            savedVelY = velY,
             gravComp = r.gravComp,
             engineDead = r.engineDead,
             noHInput = r.noHInput,
