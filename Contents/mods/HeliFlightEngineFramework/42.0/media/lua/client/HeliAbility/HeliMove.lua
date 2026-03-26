@@ -63,22 +63,6 @@ local function checkValid(playerObj, vehicle)
 end
 
 -------------------------------------------------------------------------------------
--- Read all keys once per frame into a table
--------------------------------------------------------------------------------------
-local function readKeys()
-    return {
-        up    = isKeyDown(Keyboard.KEY_UP),
-        down  = isKeyDown(Keyboard.KEY_DOWN),
-        left  = isKeyDown(Keyboard.KEY_LEFT),
-        right = isKeyDown(Keyboard.KEY_RIGHT),
-        w     = isKeyDown(Keyboard.KEY_W),
-        s     = isKeyDown(Keyboard.KEY_S),
-        a     = isKeyDown(Keyboard.KEY_A),
-        d     = isKeyDown(Keyboard.KEY_D),
-    }
-end
-
--------------------------------------------------------------------------------------
 -- Main OnTick handler
 -------------------------------------------------------------------------------------
 local function helicopterMovementUpdate()
@@ -91,53 +75,23 @@ local function helicopterMovementUpdate()
         return
     end
 
-    local heliType = GetHeliType(vehicle)
-    local fpsMultiplier = HeliConfig.TARGET_FPS / math.max(getAverageFPS(), HeliConfig.MIN_FPS)
-    local curr_z = HeliUtil.toLuaNum(vehicle:getWorldPos(0, 0, 0, tempVector2):z())
-
-    local keys = readKeys()
-
     -- Prevent CarController speed regulation from fighting our forces.
     vehicle:setMaxSpeed(HeliConfig.MAX_SPEED_OVERRIDE)
 
-    -- Invalidate per-frame caches
-    HeliTerrainUtil.invalidateBlockedCache()
+    -- Build per-frame context (keys, velocity, terrain, wall blocking)
+    --- @type HEFCtx
+    local ctx = HEFContext.build(vehicle, playerObj, tempVector2)
+    local curr_z = ctx.curr_z
+    local nowMaxZ = ctx.nowMaxZ
+    local keys = ctx.keys
+    local velX = ctx.velX
+    local velY = ctx.velY
+    local velZ = ctx.velZ
+    local fpsMultiplier = ctx.fpsMultiplier
+    local heliType = ctx.heliType
 
     -- Ghost mode
     HeliAuxiliary.updateGhostMode(playerObj, curr_z)
-
-    -- Landing surface detection
-    local nowMaxZ = HeliTerrainUtil.getNowMaxZ(playerObj, curr_z)
-
-    -- Read velocity once per frame (framework-owned, avoids stale-read side effects)
-    local rawVelX, rawVelY, rawVelZ = HeliVelocityAdapter.getVelocity(vehicle)
-    local velX = HeliUtil.toLuaNum(rawVelX)
-    local velY = HeliUtil.toLuaNum(rawVelY)
-    local velZ = HeliUtil.toLuaNum(rawVelZ)
-
-    -- Pre-compute wall blocking (framework-owned world geometry)
-    local blocked = {
-        up    = HeliTerrainUtil.isBlocked(playerObj, "UP", vehicle, tempVector2),
-        down  = HeliTerrainUtil.isBlocked(playerObj, "DOWN", vehicle, tempVector2),
-        left  = HeliTerrainUtil.isBlocked(playerObj, "LEFT", vehicle, tempVector2),
-        right = HeliTerrainUtil.isBlocked(playerObj, "RIGHT", vehicle, tempVector2),
-    }
-
-    -- Build context table (passed to engine)
-    local ctx = {
-        vehicle = vehicle,
-        playerObj = playerObj,
-        keys = keys,
-        fpsMultiplier = fpsMultiplier,
-        heliType = heliType,
-        curr_z = curr_z,
-        nowMaxZ = nowMaxZ,
-        tempVector2 = tempVector2,
-        velX = velX,
-        velY = velY,
-        velZ = velZ,
-        blocked = blocked,
-    }
 
     -- Flight state initialization (first frame entering flight)
     if _flightState == STATE_INACTIVE then
