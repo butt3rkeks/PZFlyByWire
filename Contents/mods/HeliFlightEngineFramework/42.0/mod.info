@@ -1,0 +1,3 @@
+name=Helicopter Flight Engine Framework (B42)
+id=HeliFlightEngineFramework
+description=Pluggable flight engine framework for helicopter mods. Ships with FBW (fly-by-wire) engine. Requires UH-1BHelicopter and WarThunderVehicleLibrary.

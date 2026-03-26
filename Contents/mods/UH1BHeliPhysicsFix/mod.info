@@ -1,3 +1,0 @@
-name=UH-1B Helicopter Physics Fix (B42)
-id=UH1BHeliPhysicsFix
-description=Replaces debug-only reflection movement with Bullet physics forces. Requires UH-1BHelicopter and WarThunderVehicleLibrary.

@@ -1,0 +1,14 @@
+Sandbox_EN = {
+    Sandbox_HEF = "Flight Engine Framework",
+    Sandbox_HEF_FlightEngine = "Active flight engine. Determines flight physics model.",
+    Sandbox_HEF_FlightEngine_option1 = "FBW (Fly-By-Wire)",
+    Sandbox_FBW = "FBW Flight Engine",
+    Sandbox_FBW_GravityEstimate = "Gravity estimate (Bullet units/s^2). Default 9.8. Calibrate by observing free-fall rate.",
+    Sandbox_FBW_AscendSpeed = "Ascend speed when pressing W (Bullet Y units/s). Default 3.6.",
+    Sandbox_FBW_DescendSpeed = "Descend speed when pressing S (Bullet Y units/s). Default 2.7.",
+    Sandbox_FBW_GravityFallSpeed = "Fall speed when engine off or out of fuel (Bullet Y units/s). Default 6.3.",
+    Sandbox_FBW_EngineDeadFallSpeed = "Fall speed when engine destroyed (Bullet Y units/s). Default 9.0.",
+    Sandbox_FBW_ResponsivenessGain = "PD controller proportional gain. Higher = snappier response but may oscillate. Default 8.0.",
+    Sandbox_FBW_MaxHorizontalSpeed = "Maximum horizontal speed from tilt (Bullet units/s). Default 12.0.",
+    Sandbox_FBW_BrakingMultiplier = "Gain multiplier when no input (arcade braking). Higher = faster stop. Default 3.0.",
+}

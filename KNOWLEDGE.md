@@ -1,8 +1,16 @@
-# UH-1B Helicopter Physics Fix — Knowledge Base
+# Helicopter Flight Engine Framework (HEF) — Knowledge Base
 
 ## Project Overview
 
-Companion mod for the UH-1B Helicopter mod (Workshop ID: 3409723807) and its B42 fix (Workshop ID: 3688683236). The original helicopter movement uses `moveVehicle()` which relies on Java reflection APIs (`getClassFieldVal`, `getClassField`, `getNumClassFields`) that are gated behind `Core.debug` mode. This mod replaces the debug-dependent movement system with a fly-by-wire (FBW) physics-force-based approach that works without debug mode, enabling helicopter flight on dedicated servers.
+Pluggable flight engine framework for helicopter mods. Ships with the FBW (fly-by-wire) engine. Companion mod for the UH-1B Helicopter mod (Workshop ID: 3409723807) and its B42 fix (Workshop ID: 3688683236). The original helicopter movement uses `moveVehicle()` which relies on Java reflection APIs (`getClassFieldVal`, `getClassField`, `getNumClassFields`) that are gated behind `Core.debug` mode. The FBW engine replaces the debug-dependent movement system with a physics-force-based approach that works without debug mode, enabling helicopter flight on dedicated servers.
+
+### Engine Framework (Strategy Pattern)
+- `IFlightEngine` defines the interface + registry. Engines register at load time.
+- `HeliSimService` is a thin dispatcher: resolves engine from sandbox setting, delegates all calls.
+- `HeliMove` builds a `ctx` table per frame, passes to engine via HeliSimService. Reads results.
+- Sandbox setting `HEF.FlightEngine` (enum) selects the active engine. HeliConfig maps index → name.
+- Each engine owns its own sandbox namespace (e.g., `SandboxVars.FBW.*`).
+- Chat command `/hef` auto-discovers tunables and commands from the active engine.
 
 ---
 
@@ -199,7 +207,7 @@ heading-independent, no calibration needed.
 - PD correction stays active as long as position error > 0.5m (regardless of tilt state)
 - During braking: sim stops advancing, actual overshoots → negative error → PD pushes back (smooth)
 - Velocity damping only activates when error ≤ 0.5m (final stop phase)
-- `FINAL_STOP_GAIN = 0.3` (tunable via `/hpf fstopgain`), capped at 0.8
+- `FINAL_STOP_GAIN = 0.3` (tunable via `/hef fstopgain`), capped at 0.8
 - Prevents the harsh PD→damping force transition that killed velocity in 2 frames
 
 ### Soft Anchor (replaces hard sim-snap)
@@ -282,30 +290,77 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 
 ## Tunable Parameters
 
-### Via `/hpf` Chat Commands
+### Via `/hef` Chat Commands
+
+**Engine tunables** (auto-discovered from active engine's `getTunables()`):
 | Command | Default | Description |
 |---------|---------|-------------|
-| `/hpf pgain <v>` | 7.0 | Position error P gain |
-| `/hpf dgain <v>` | 0.3 | Position error D gain (damping) |
-| `/hpf maxerr <v>` | 10.0 | Max position error (tanh saturation, meters) |
-| `/hpf yawgain <v>` | 0.9 | Yaw correction gain (overridden to 1.0 by hard lock) |
-| `/hpf autolevel <v>` | 1.0 | Auto-leveling speed multiplier |
-| `/hpf hspeed <v>` | 450 | Max horizontal speed (m/s at max tilt) |
-| `/hpf fstopgain <v>` | 0.3 | Velocity damping strength (0.3=smooth, 0.8=snappy) |
-| `/hpf gravity <v>` | 9.80 | Gravity compensation estimate |
-| `/hpf kp <v>` | 8.0 | Vertical PD gain |
-| `/hpf ascend <v>` | 8.0 | Ascend speed (Bullet Y/s) |
-| `/hpf descend <v>` | 14.0 | Descend speed |
-| `/hpf fall <v>` | 24.5 | Engine-off fall speed |
-| `/hpf deadfall <v>` | 35.0 | Engine-dead fall speed |
+| `/hef pgain <v>` | 7.0 | Position error P gain |
+| `/hef dgain <v>` | 0.3 | Position error D gain (damping) |
+| `/hef maxerr <v>` | 10.0 | Max position error (tanh saturation, meters) |
+| `/hef yawgain <v>` | 0.9 | Yaw correction gain |
+| `/hef autolevel <v>` | 1.0 | Auto-leveling speed multiplier |
+| `/hef fstopgain <v>` | 0.3 | Velocity damping strength (0.3=smooth, 0.8=snappy) |
 
-**Note**: Existing saves retain old sandbox defaults. Use `/hpf` commands to override per-session.
+**Sandbox params** (from HeliConfig, persisted per-save):
+| Command | Default | Description |
+|---------|---------|-------------|
+| `/hef gravity <v>` | 9.80 | Gravity compensation estimate |
+| `/hef kp <v>` | 8.0 | Vertical PD gain |
+| `/hef hspeed <v>` | 450 | Max horizontal speed (m/s at max tilt) |
+| `/hef ascend <v>` | 8.0 | Ascend speed (Bullet Y/s) |
+| `/hef descend <v>` | 14.0 | Descend speed |
+| `/hef fall <v>` | 24.5 | Engine-off fall speed |
+| `/hef deadfall <v>` | 35.0 | Engine-dead fall speed |
+
+**Note**: Existing saves retain old sandbox defaults. Use `/hef` commands to override per-session.
 
 ---
 
 ## Module Responsibilities
 
-### Util/ — Foundational utilities + config (`shared/HeliPhysics/Util/`)
+### Models/ — Shared OOP data structures (`shared/HEF/Models/`)
+
+**`Quaternion.lua`** — Metatable-based quaternion class
+- `new()`, `identity()`, `fromAxisAngle()`, `fromEuler()`
+- `multiply()`, `__mul`, `conjugate()`, `normalize()`, `length()`, `unpack()`
+- Zero-alloc: `multiplyInto()`, `conjugateInto()`, `_temp1/_temp2`
+- Conversion: `toMatrixComponents()` (9 numbers), `toMatrix()` (RotationMatrix), `matrixToEuler()` (static)
+- **Changes when**: math operations needed by new engines
+
+**`RotationMatrix.lua`** — 3x3 rotation matrix with semantic accessors
+- `new()`, `fromQuaternion(q)`
+- Semantic: `getForwardPzX()` (R02), `getForwardPzY()` (R22), `getVertical()` (R12), `getRightVertical()` (R10)
+- PZ convention: Row0=PzX, Row1=PzZ(vertical), Row2=PzY(horizontal). Y/Z SWAPPED.
+- **Changes when**: matrix operations needed by new engines
+
+### Engines/ — Flight engine implementations (`shared/HEF/Engines/`)
+
+**`IFlightEngine.lua`** — Interface definition + registry
+- `REQUIRED_METHODS` — validated at register time (crash early on missing method)
+- `register(name, engine)`, `get(name)`, `getRegisteredNames()`
+- **Changes when**: interface contract changes (new mandatory method)
+
+### Engines/FBW/ — Fly-by-wire engine (`shared/HEF/Engines/FBW/`)
+
+**`FBWEngine.lua`** — Facade implementing IFlightEngine
+- `update(ctx)` → results table (horizontal + vertical + rotation)
+- `updateGround(ctx)` → {liftoff, displaySpeed}
+- `applyCorrectionForces(vehicle)` — 0-frame delay path
+- Lifecycle, tunables, sandbox options, debug state, commands
+- Registers itself: `IFlightEngine.register("FBW", FBWEngine)`
+- **Changes when**: FBW orchestration flow changes
+
+**`FBWOrientation.lua`** — Quaternion-state yaw/tilt (uses Models/Quaternion)
+**`FBWFilters.lua`** — Composable filter pipeline (stateless)
+**`FBWRawSim.lua`** — Simulation advance (position + velocity)
+**`FBWErrorTracker.lua`** — History buffer + tanh error saturation
+**`FBWForceComputer.lua`** — PD correction + thrust force math
+**`FBWYawController.lua`** — Yaw MPC (simYaw tracking + re-anchor)
+**`FBWInputProcessor.lua`** — Key → rotation deltas
+**`FBWFlightModel.lua`** — Vertical flight behavior
+
+### Util/ — Foundational utilities + config (`shared/HEF/Util/`)
 
 **`HeliUtil.lua`** — Shared utilities
 - `toLuaNum(v)`, `normalizeAngle(angle)`
@@ -331,49 +386,7 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 - Per-frame isBlocked cache (`invalidateBlockedCache()`) — eliminates redundant 132-square scans
 - **Changes when**: PZ changes flag names or grid square API
 
-### Core/ — Pure math, no game API (`shared/HeliPhysics/Core/`)
-
-**`HeliOrientation.lua`** — Quaternion-state yaw/tilt orientation
-- CustomQuaternion library (pure Lua)
-- `_yawDeg` (scalar) + `_tiltQuat` (quaternion) — no yaw extraction anywhere
-- `initFromVehicle()`, `reset()`, `applyTilt(ax, az)`, `applyYaw(ay)`
-- `getBodyPitch()`, `getBodyRoll()` — from `_tiltQuat` matrix (heading-independent)
-- `getForward()` — from composed orientation matrix (`R02, R22`)
-- `getYaw()`, `setYaw(deg)` — scalar yaw hard lock
-- `toEuler()` — for setAngles output
-- **Changes when**: quaternion math, gimbal fix, rotation model
-
-**`HeliFilters.lua`** — Composable filter pipeline (all stateless)
-- `applyNoiseFloor(totalTiltRad, noiseFloor)` → effectiveTilt
-- `decomposeThrustDirection(pitchDev, rollDev, ...)` → velX, velZ, totalSpeed
-- `clampSpeed(velX, velZ, maxHSpeed)` → velX, velZ, totalSpeed
-- `clampThrustDirection(velX, velZ, ...)` → velX, velZ
-- **Changes when**: add filter (turbulence, wind), thrust decomposition changes
-
-**`HeliRawSim.lua`** — Simulation advance (position + velocity)
-- State: `_simPosX/Z`, `_simVelX/Z`
-- `reset()`, `advance(desiredVelX, desiredVelZ, dt, inertia)`, `snapPosition()`, `blendToward()`
-- Testable with numbers on paper. No PD, no error, no flags, no game API.
-- **Changes when**: swap sim model (MPC → velocity controller)
-
-**`HeliErrorTracker.lua`** — History buffer + tanh error saturation
-- 30-frame ring buffer, `saturateError()` helper (manual tanh for Kahlua)
-- `reset()`, `record(actualX, actualZ, simPosX, simPosZ)`, `getPositionError()`, `getErrorMagnitude()`
-- **Changes when**: error computation, saturation curve, lookback window
-
-**`HeliForceComputer.lua`** — PD correction + thrust force math
-- `computeCorrectionForce(...)` → fx, fz (PD when errMag > threshold, velocity damping otherwise)
-- `computeThrustForce(...)` → fy (vertical PD + gravity comp, dual-rate for high FPS)
-- Returns force magnitudes only — no Bullet API calls
-- **Changes when**: PD tuning, force computation changes
-
-**`HeliYawController.lua`** — Yaw MPC (simYaw tracking + re-anchor)
-- State: `_simYaw`, `_wasRotating`, `_lastSimYaw`
-- `update(currentYawDeg, isRotating, yawDelta)` → simYaw for hard lock
-- `checkHeadingReanchor(fps)` → boolean (time-scaled threshold for sim position re-anchor)
-- **Changes when**: heading drift, yaw behavior
-
-### Adapters/ — Bullet physics I/O (`shared/HeliPhysics/Adapters/`)
+### Adapters/ — Bullet physics I/O (`shared/HEF/Adapters/`)
 
 **`HeliForceAdapter.lua`** — Force output + sub-steps
 - `applyForceImmediate(vehicle, fx, fy, fz)` — Y/Z swap + applyImpulseGeneric
@@ -387,29 +400,6 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 - `resetSmoothing()`
 - **Changes when**: PZ exposes direct velocity setter
 
-### Flight/ — Facade + input + vertical (`client/HeliAbility/Flight/`)
-
-**`HeliInputProcessor.lua`** — Key → rotation deltas
-- `computeRotationDeltas(keys, fpsMultiplier, heliType, ...)` → ax, ay, az, isRotating
-- Auto-leveling (pitch + roll), wall collision reversal, yaw speed
-- Reads HeliOrientation for body angles, HeliConfig for tuning, HeliTerrainUtil for walls
-- **Changes when**: rotation feel, key mappings, auto-level factors
-
-**`HeliSimService.lua`** — Facade (pure orchestration, zero computation)
-- `update(vehicle, playerObj, keys, ...)` → results table (one frame of horizontal flight)
-- `applyCorrectionForces(vehicle)` — 0-frame delay correction path
-- `applyThrustForces(vehicle, desiredVelY, gravComp, savedVelY)` — vertical thrust
-- `resetFlightState()`, `initFlight()`, `tickWarmup()`, `isWarmedUp()`
-- Accessor delegation: getPGain/setPGain etc. → HeliConfig.get/set
-- Coordinates: wall pre-blocking, filter pipeline, sim advance, heading re-anchor, soft anchor, FA-off coast
-- **Changes when**: orchestration flow between Core modules
-
-**`HeliFlightModel.lua`** — Vertical flight behavior
-- `computeVerticalTarget(vehicle, curr_z, freeMode, keys)` — keys/fuel/engine → vertical target + gravity comp flag
-- Ceiling taper, landing zone awareness
-- Reads HeliVelocityAdapter for FA-off coast velocity
-- **Changes when**: vertical flight feel changes
-
 ### Debug/ — Debug logging + chat commands (`client/HeliAbility/Debug/`)
 
 **`HeliDebug.lua`** — Debug state + logging
@@ -417,21 +407,28 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 - Flight data CSV recorder: `startRecording()`, `stopRecording()`, `writeFlightFrame()`
 - **Changes when**: debug output format changes
 
-**`HeliDebugCommands.lua`** — `/hpf` runtime tuning
-- Chat command parser, reads/writes via HeliConfig and HeliSimService accessors
-- Parameter definitions sourced from HeliConfig.getParamDefs() (single source of truth)
-- **Changes when**: new tuning parameters added (add to HeliConfig, commands auto-discover)
+**`HeliDebugCommands.lua`** — `/hef` runtime tuning
+- Auto-discovers tunables from active engine via `HeliSimService.getTunables()`
+- Auto-discovers commands from active engine via `HeliSimService.getCommands()`
+- Fallback: HeliConfig params (sandbox-level tuning)
+- **Changes when**: framework command structure changes (engine tunables auto-discovered)
 
 ### Root — Orchestrator + gameplay (`client/HeliAbility/`)
 
+**`HeliSimService.lua`** — Thin dispatcher (engine-agnostic)
+- Resolves engine from `HeliConfig.getEngineName()` → `IFlightEngine.get(name)`
+- Every public method delegates 1:1 to active engine
+- **Changes when**: interface contract changes (new method added)
+
 **`HeliMove.lua`** — Orchestrator (thin controller)
-- Reads all keys into table once per frame, passes to facade
+- Builds `ctx` table once per frame: {vehicle, playerObj, keys, fpsMultiplier, heliType, curr_z, nowMaxZ, tempVector2}
+- Passes ctx to engine via HeliSimService, reads results
 - Explicit flight state machine: `inactive → warmup → airborne` (3 states)
 - Module lifecycle: `onFlightInit(fn)` / `onFlightCleanup(fn)` registration for extensions
 - `helicopterMovementUpdate()` (OnTick), `helicopterCorrectionUpdate()` (OnTickEvenPaused)
-- Ground path: uses HeliForceAdapter directly (simple, no sim needed)
+- Handles gameplay side-effects: engine dead → ISVehicleMenu.onShutOff, displaySpeed → setSpeedKmHour
 - The ONLY file that registers event handlers
-- **Changes when**: orchestration flow changes
+- **Changes when**: framework orchestration flow changes
 - **Adding new modules**: call `HeliMove.onFlightInit(fn)` at load time, no HeliMove edit needed
 
 **`HeliAuxiliary.lua`** — Ghost mode, lights, gas, damage
@@ -445,9 +442,9 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 ## File Structure
 
 ```
-UH1BHeliPhysicsFix/
+HeliFlightEngineFramework/
   KNOWLEDGE.md
-  Contents/mods/UH1BHeliPhysicsFix/
+  Contents/mods/HeliFlightEngineFramework/
     mod.info
     42.0/
       mod.info
@@ -455,19 +452,27 @@ UH1BHeliPhysicsFix/
         sandbox-options.txt
         lua/
           shared/
-            HeliPhysics/
+            HEF/
+              Models/
+                Quaternion.lua          ← OOP quaternion (shared by all engines)
+                RotationMatrix.lua      ← OOP 3x3 matrix with PZ semantic accessors
               Util/
                 HeliUtil.lua
-                HeliConfig.lua
+                HeliConfig.lua          ← + getEngineName() engine selector
                 HeliCompat.lua
                 HeliTerrainUtil.lua
-              Core/
-                HeliOrientation.lua
-                HeliFilters.lua
-                HeliRawSim.lua
-                HeliErrorTracker.lua
-                HeliForceComputer.lua
-                HeliYawController.lua
+              Engines/
+                IFlightEngine.lua       ← interface + registry
+                FBW/
+                  FBWEngine.lua         ← facade implementing IFlightEngine
+                  FBWOrientation.lua    ← uses Models/Quaternion
+                  FBWFilters.lua
+                  FBWRawSim.lua
+                  FBWErrorTracker.lua
+                  FBWForceComputer.lua
+                  FBWYawController.lua
+                  FBWInputProcessor.lua
+                  FBWFlightModel.lua
               Adapters/
                 HeliForceAdapter.lua
                 HeliVelocityAdapter.lua
@@ -475,14 +480,11 @@ UH1BHeliPhysicsFix/
               Sandbox_EN.txt
           client/
             HeliAbility/
-              Flight/
-                HeliInputProcessor.lua
-                HeliSimService.lua
-                HeliFlightModel.lua
+              HeliSimService.lua        ← thin dispatcher (delegates to active engine)
               Debug/
                 HeliDebug.lua
-                HeliDebugCommands.lua
-              HeliMove.lua
+                HeliDebugCommands.lua   ← auto-discovers tunables/commands
+              HeliMove.lua              ← builds ctx, reads results
               HeliAuxiliary.lua
             PanzerAbility/
               OnHitGround.lua
@@ -504,37 +506,43 @@ PZ completes all file loading before the game loop starts any ticks.
 ### Dependency Graph (layered, no cycles)
 
 ```
+  ┌── Models/ ──────────────────────┐
+  │ Quaternion                      │ (shared by all engines)
+  │ RotationMatrix                  │
+  └─────────────────────────────────┘
+                  │
   ┌── Util/ ────────────────────────┐
   │ HeliUtil                        │
-  │ HeliConfig                      │ (read by all)
+  │ HeliConfig                      │ (read by all + engine selector)
   │ HeliCompat                      │
   │ HeliTerrainUtil                 │
   └─────────────────────────────────┘
                   │
-  ┌── Core/ (pure math) ───────────┐
-  │ HeliOrientation                │
-  │ HeliFilters                    │
-  │ HeliRawSim                     │
-  │ HeliErrorTracker               │
-  │ HeliForceComputer              │
-  │ HeliYawController              │
-  └────────────────────────────────┘
+  ┌── Engines/IFlightEngine ────────┐
+  │ Interface + registry            │
+  └─────────────────────────────────┘
                   │
-  ┌── Adapters/ (Bullet I/O) ─────┐
-  │ HeliForceAdapter               │
-  │ HeliVelocityAdapter            │
-  └────────────────────────────────┘
+  ┌── Engines/FBW/ ─────────────────┐
+  │ FBWEngine (facade)              │ → registers with IFlightEngine
+  │ FBWOrientation, FBWFilters,     │
+  │ FBWRawSim, FBWErrorTracker,     │
+  │ FBWForceComputer, FBWYawCtrl,   │
+  │ FBWInputProcessor, FBWFlightMdl │
+  └─────────────────────────────────┘
                   │
-  ┌── Flight/ ─────────────────────┐
-  │ HeliInputProcessor             │ (reads Orientation, TerrainUtil, Config)
-  │ HeliSimService (facade)        │ (orchestrates Core + Adapters + InputProcessor)
-  │ HeliFlightModel                │ (vertical targets)
-  └────────────────────────────────┘
+  ┌── Adapters/ (Bullet I/O) ──────┐
+  │ HeliForceAdapter                │
+  │ HeliVelocityAdapter             │
+  └─────────────────────────────────┘
                   │
-  ┌── Debug/ ──────────────────────┐
-  │ HeliDebug                      │
-  │ HeliDebugCommands              │ (reads SimService accessors)
-  └────────────────────────────────┘
+  ┌── HeliSimService (dispatcher) ──┐
+  │ Resolves engine, delegates 1:1  │
+  └─────────────────────────────────┘
+                  │
+  ┌── Debug/ ───────────────────────┐
+  │ HeliDebug                       │
+  │ HeliDebugCommands               │ (auto-discovers from engine)
+  └─────────────────────────────────┘
                   │
           ┌───────┴───────┐
           │   HeliMove    │  (orchestrator + events)
@@ -542,9 +550,8 @@ PZ completes all file loading before the game loop starts any ticks.
           └───────────────┘
 ```
 
-No mutual runtime dependencies. Each layer only calls downward. The old
-HeliForceController ↔ HeliSimulation circular dependency has been eliminated
-by splitting into Core (pure math) + Adapters (I/O) + Facade (coordination).
+No mutual runtime dependencies. Each layer only calls downward.
+Engines are self-contained: register at load time, discovered via IFlightEngine.
 
 ### Architectural Patterns
 
@@ -552,16 +559,19 @@ by splitting into Core (pure math) + Adapters (I/O) + Facade (coordination).
 Util → Core → Adapters → Flight → Debug → Root. Core modules are pure math (no game API),
 Adapters handle Bullet I/O, and the Facade orchestrates everything with zero computation.
 
-**Centralized Config** — `HeliConfig.lua` is the single source of truth for all tuning parameters.
-Sandbox defaults, runtime overrides, and named flight constants all live here. No `SandboxVars.X or default`
-appears outside HeliConfig. Adding a new parameter: add to HeliConfig's PARAMS table → `/hpf` auto-discovers it.
+**Strategy Pattern** — `IFlightEngine` defines the contract. Engines register at load time.
+`HeliSimService` dispatches to the active engine. `HeliMove` never sees the engine directly.
+Adding a new engine: create `Engines/NewEngine/`, implement interface, register, add sandbox enum option.
 
-**Keys as Parameter** — HeliMove reads all keys once per frame into a table, passes to facade.
+**Centralized Config** — `HeliConfig.lua` is the single source of truth for sandbox params and named constants.
+Engine-specific runtime tunables are owned by the engine via `getTunables()/setTunable()`.
+`HeliConfig.getEngineName()` maps the sandbox enum to an engine name string.
+
+**Keys as Parameter** — HeliMove reads all keys once per frame into a `ctx` table, passes to engine.
 No module calls `isKeyDown()` directly except HeliMove's `readKeys()`.
 
-**Facade Pattern** — HeliSimService is pure orchestration (zero computation). All math is in Core modules.
-HeliMove only talks to HeliSimService for horizontal flight. This makes the processing chain testable
-with synthetic inputs.
+**Dispatcher Pattern** — HeliSimService is a thin dispatcher (zero computation). Resolves engine once,
+delegates all calls 1:1. HeliMove only talks to HeliSimService.
 
 **Module Lifecycle** — `HeliMove.onFlightInit(fn)` and `HeliMove.onFlightCleanup(fn)` allow modules to
 self-register initialization/cleanup callbacks. Adding a new subsystem (e.g., HeliTurbulence) doesn't
@@ -577,17 +587,16 @@ between HeliInputProcessor and HeliSimService wall-blocking in the same frame.
 
 | Change scenario | Files affected | Folder |
 |----------------|---------------|--------|
-| New sandbox parameter | HeliConfig only (auto-discovered by /hpf) | Util/ |
-| PD controller tuning | HeliConfig (owns all tunables) | Util/ |
-| Rotation feel / key mappings | HeliInputProcessor only | Flight/ |
-| Quaternion math / gimbal fix | HeliOrientation only | Core/ |
-| Add filter (turbulence, wind) | HeliFilters + HeliSimService (add stage) | Core/ + Flight/ |
-| Swap sim model (MPC → velocity) | HeliRawSim only | Core/ |
-| Flight speed / tilt tuning | HeliFilters only (or HeliConfig) | Core/ |
+| New sandbox parameter | HeliConfig + sandbox-options.txt | Util/ |
+| Add new flight engine | New Engines/X/ folder, implement IFlightEngine, add sandbox enum | Engines/ |
+| FBW PD controller tuning | FBWEngine tunables (auto-discovered by /hef) | Engines/FBW/ |
+| FBW rotation feel / key mappings | FBWInputProcessor only | Engines/FBW/ |
+| FBW quaternion math | FBWOrientation (uses Models/Quaternion) | Engines/FBW/ |
+| FBW add filter (turbulence) | FBWFilters + FBWEngine (add stage) | Engines/FBW/ |
+| FBW swap sim model | FBWRawSim only | Engines/FBW/ |
+| Shared quaternion math | Quaternion.lua or RotationMatrix.lua | Models/ |
 | PZ exposes velocity setter | HeliVelocityAdapter only | Adapters/ |
 | Force application changes | HeliForceAdapter only | Adapters/ |
-| Vertical speed tuning | HeliFlightModel only | Flight/ |
-| Heading / yaw drift | HeliYawController (yaw MPC state) | Core/ |
 | Wall collision detection | HeliTerrainUtil only | Util/ |
 | Gas consumption, lights | HeliAuxiliary only | root |
 | New gameplay system | New file + HeliMove.onFlightInit | root |
@@ -636,21 +645,22 @@ between HeliInputProcessor and HeliSimService wall-blocking in the same frame.
 
 ---
 
-## Layered Architecture (Implemented)
+## Architecture History
 
-The codebase was restructured from entangled modules (HeliRotation, HeliDirection,
-HeliSimulation, HeliForceController) into a layered architecture with strict
-downward-only dependencies. See Module Responsibilities and Dependency Graph above.
+**Phase 1 — Layered restructuring**: Entangled modules (HeliRotation, HeliDirection,
+HeliSimulation, HeliForceController) restructured into Util → Core → Adapters → Flight → Debug layers.
+Plan: `C:\Users\butt3rkeks\.claude\plans\fluttering-discovering-spark.md`
 
-**Implementation plan**: `C:\Users\butt3rkeks\.claude\plans\fluttering-discovering-spark.md`
+**Phase 2 — HEF framework**: Core/Flight modules moved into `Engines/FBW/` (strategy pattern).
+IFlightEngine interface, thin HeliSimService dispatcher, Models/ shared data structures.
+Plan: `C:\Users\butt3rkeks\.claude\plans\nifty-munching-pearl.md`
 
-Benefits achieved:
-- Swap sim model (HeliRawSim only) without touching filters or orientation
-- Add composable filters (HeliFilters) as pipeline stages
-- Swap orientation model (HeliOrientation only) without touching anything else
-- Unit-test Core modules with synthetic inputs (no game API dependencies)
-- HeliMove is trivially thin — just event registration, key reading, and state machine
-- No mutual runtime dependencies (old HeliForceController ↔ HeliSimulation cycle eliminated)
+Benefits:
+- Swap entire flight engine via sandbox setting
+- New engines are self-contained folders, no framework edits needed
+- Shared Models (Quaternion, RotationMatrix) reusable across engines
+- Auto-discovery of tunables and commands via interface
+- HeliMove is engine-agnostic — builds ctx, reads results
 
 ---
 
