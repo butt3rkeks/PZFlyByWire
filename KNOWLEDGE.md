@@ -334,21 +334,46 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 - PZ convention: Row0=PzX, Row1=PzZ(vertical), Row2=PzY(horizontal). Y/Z SWAPPED.
 - **Changes when**: matrix operations needed by new engines
 
+### Type Classes — Framework data contracts (`shared/HEF/`)
+
+**`HEFContext.lua`** — Per-frame context (OnTick phase)
+- `@class HEFCtx` + `CTX_FIELDS` (runtime validators) + `build(vehicle, playerObj, tempVector2)`
+- Reads: keyboard, velocity (one adapter call), terrain, wall blocking, position, mass, physics timing
+- Sub-types: `@class HEFKeys`, `@class HEFBlocked`
+- **Changes when**: new data needed by engines (add field here + in builder)
+
+**`HEFCorrectionCtx.lua`** — Correction-phase context (OnTickEvenPaused phase)
+- `@class HEFCorrectionCtx` + `CTX_FIELDS` + `build(vehicle)`
+- Reads: fresh post-physics velocity, mass
+- **Changes when**: correction path needs additional data
+
+**`HEFUpdateResult.lua`** — Mandatory return from `update(ctx)` (`@class` + `new()`)
+**`HEFGroundResult.lua`** — Mandatory return from `updateGround(ctx)` (`@class` + `new()`)
+**`HEFTunable.lua`** — Return element from `getTunables()` (`@class` + `new()`)
+**`HEFSandboxOptions.lua`** — Return from `getSandboxOptions()` (`@class` + `new()`, includes `HEFSandboxOption`)
+**`HEFCommand.lua`** — Return element from `getCommands()` (`@class` + `new()`)
+**`HEFEngineInfo.lua`** — Return from `getInfo()` (`@class` + `new()`)
+
+All type classes have EmmyLua annotations for IDE autocompletion. `HEF` prefix distinguishes them from PZ types.
+
 ### Engines/ — Flight engine implementations (`shared/HEF/Engines/`)
 
 **`IFlightEngine.lua`** — Interface definition + registry
 - `REQUIRED_METHODS` — validated at register time (crash early on missing method)
+- `OPTIONAL_METHODS` — listed for discoverability, not validated (e.g. `applyCorrectionForces`)
 - `register(name, engine)`, `get(name)`, `getRegisteredNames()`
-- **Changes when**: interface contract changes (new mandatory method)
+- References type contracts: HEFContext, HEFCorrectionCtx, result classes
+- **Changes when**: interface contract changes (new method or ctx field)
 
 ### Engines/FBW/ — Fly-by-wire engine (`shared/HEF/Engines/FBW/`)
 
 **`FBWEngine.lua`** — Facade implementing IFlightEngine
-- `update(ctx)` → results table (horizontal + vertical + rotation)
-- `updateGround(ctx)` → {liftoff, displaySpeed}
-- `applyCorrectionForces(vehicle)` — 0-frame delay path
+- `update(ctx:HEFCtx)` → HEFUpdateResult (horizontal + vertical + rotation)
+- `updateGround(ctx:HEFCtx)` → HEFGroundResult
+- `applyCorrectionForces(cctx:HEFCorrectionCtx)` — optional 0-frame delay path
 - Lifecycle, tunables, sandbox options, debug state, commands
-- Registers itself: `IFlightEngine.register("FBW", FBWEngine)`
+- Registers with deferred fallback: immediate if IFlightEngine loaded, else OnGameStart
+- Uses ctx fields for position, velocity, mass, subSteps, blocked (no direct game API reads per-frame)
 - **Changes when**: FBW orchestration flow changes
 
 **`FBWOrientation.lua`** — Quaternion-state yaw/tilt (uses Models/Quaternion)
@@ -357,8 +382,8 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 **`FBWErrorTracker.lua`** — History buffer + tanh error saturation
 **`FBWForceComputer.lua`** — PD correction + thrust force math
 **`FBWYawController.lua`** — Yaw MPC (simYaw tracking + re-anchor)
-**`FBWInputProcessor.lua`** — Key → rotation deltas
-**`FBWFlightModel.lua`** — Vertical flight behavior
+**`FBWInputProcessor.lua`** — Key → rotation deltas (uses ctx.blocked, not HeliTerrainUtil)
+**`FBWFlightModel.lua`** — Vertical flight behavior (receives velY from caller, no adapter calls)
 
 ### Util/ — Foundational utilities + config (`shared/HEF/Util/`)
 
@@ -418,14 +443,18 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 **`HeliSimService.lua`** — Thin dispatcher (engine-agnostic)
 - Resolves engine from `HeliConfig.getEngineName()` → `IFlightEngine.get(name)`
 - Every public method delegates 1:1 to active engine
+- Guards optional methods (`applyCorrectionForces`) with existence check
+- Full EmmyLua annotations on all methods for IDE autocompletion
 - **Changes when**: interface contract changes (new method added)
 
 **`HeliMove.lua`** — Orchestrator (thin controller)
-- Builds `ctx` table once per frame: {vehicle, playerObj, keys, fpsMultiplier, heliType, curr_z, nowMaxZ, tempVector2}
-- Passes ctx to engine via HeliSimService, reads results
+- Calls `HEFContext.build()` once per frame (velocity, position, mass, keys, terrain, physics timing)
+- Passes HEFCtx to engine via HeliSimService, reads HEFUpdateResult/HEFGroundResult
+- Calls `HEFCorrectionCtx.build()` on OnTickEvenPaused for the correction path
+- Flight state init runs BEFORE ctx build (ensures velocity adapter is reset before first read)
 - Explicit flight state machine: `inactive → warmup → airborne` (3 states)
+- Engine-off fall: framework-level PD (engine-agnostic, no engine involved)
 - Module lifecycle: `onFlightInit(fn)` / `onFlightCleanup(fn)` registration for extensions
-- `helicopterMovementUpdate()` (OnTick), `helicopterCorrectionUpdate()` (OnTickEvenPaused)
 - Handles gameplay side-effects: engine dead → ISVehicleMenu.onShutOff, displaySpeed → setSpeedKmHour
 - The ONLY file that registers event handlers
 - **Changes when**: framework orchestration flow changes
@@ -453,19 +482,27 @@ HeliFlightEngineFramework/
         lua/
           shared/
             HEF/
+              HEFContext.lua            ← @class HEFCtx + CTX_FIELDS + build()
+              HEFCorrectionCtx.lua     ← @class HEFCorrectionCtx + CTX_FIELDS + build()
+              HEFUpdateResult.lua      ← @class + new()
+              HEFGroundResult.lua      ← @class + new()
+              HEFTunable.lua           ← @class + new()
+              HEFSandboxOptions.lua    ← @class + new() (includes HEFSandboxOption)
+              HEFCommand.lua           ← @class + new()
+              HEFEngineInfo.lua        ← @class + new()
               Models/
-                Quaternion.lua          ← OOP quaternion (shared by all engines)
-                RotationMatrix.lua      ← OOP 3x3 matrix with PZ semantic accessors
+                Quaternion.lua         ← OOP quaternion (shared by all engines)
+                RotationMatrix.lua     ← OOP 3x3 matrix with PZ semantic accessors
               Util/
                 HeliUtil.lua
-                HeliConfig.lua          ← + getEngineName() engine selector
+                HeliConfig.lua         ← + getEngineName() engine selector
                 HeliCompat.lua
                 HeliTerrainUtil.lua
               Engines/
-                IFlightEngine.lua       ← interface + registry
+                IFlightEngine.lua      ← interface + registry (REQUIRED + OPTIONAL methods)
                 FBW/
-                  FBWEngine.lua         ← facade implementing IFlightEngine
-                  FBWOrientation.lua    ← uses Models/Quaternion
+                  FBWEngine.lua        ← facade implementing IFlightEngine
+                  FBWOrientation.lua   ← uses Models/Quaternion
                   FBWFilters.lua
                   FBWRawSim.lua
                   FBWErrorTracker.lua
@@ -480,11 +517,11 @@ HeliFlightEngineFramework/
               Sandbox_EN.txt
           client/
             HeliAbility/
-              HeliSimService.lua        ← thin dispatcher (delegates to active engine)
+              HeliSimService.lua       ← thin dispatcher (delegates to active engine)
               Debug/
                 HeliDebug.lua
-                HeliDebugCommands.lua   ← auto-discovers tunables/commands
-              HeliMove.lua              ← builds ctx, reads results
+                HeliDebugCommands.lua  ← auto-discovers tunables/commands
+              HeliMove.lua             ← orchestrator, builds ctx via HEFContext.build()
               HeliAuxiliary.lua
             PanzerAbility/
               OnHitGround.lua
@@ -496,30 +533,37 @@ HeliFlightEngineFramework/
 
 PZ loads `shared/` before `client/`, directories recursively. With subdirectories,
 exact traversal order is filesystem-dependent. To eliminate all load-order concerns:
-**no file-scope `local x = Module.y` for cross-module refs in Core/ or Adapters/ files**.
-Instead, access globals inside function bodies. Util/ files define their globals at file
-scope as before — they have no cross-module dependencies.
+**no file-scope cross-module refs** — access globals inside function bodies only.
 
 All cross-module references are inside function bodies (called after all files load).
 PZ completes all file loading before the game loop starts any ticks.
+
+**FBWEngine registration**: `IFlightEngine.register("FBW", FBWEngine)` is the only
+file-scope cross-module call. Guarded: if `IFlightEngine` exists, registers immediately;
+otherwise defers to `Events.OnGameStart` (all files loaded before events fire).
 
 ### Dependency Graph (layered, no cycles)
 
 ```
   ┌── Models/ ──────────────────────┐
-  │ Quaternion                      │ (shared by all engines)
-  │ RotationMatrix                  │
+  │ Quaternion, RotationMatrix      │ (shared by all engines)
   └─────────────────────────────────┘
                   │
   ┌── Util/ ────────────────────────┐
-  │ HeliUtil                        │
-  │ HeliConfig                      │ (read by all + engine selector)
-  │ HeliCompat                      │
-  │ HeliTerrainUtil                 │
+  │ HeliUtil, HeliConfig,           │
+  │ HeliCompat, HeliTerrainUtil     │
+  └─────────────────────────────────┘
+                  │
+  ┌── HEF Types (data contracts) ──┐
+  │ HEFContext, HEFCorrectionCtx,   │ (framework → engine)
+  │ HEFUpdateResult, HEFGroundResult│ (engine → framework)
+  │ HEFTunable, HEFSandboxOptions, │
+  │ HEFCommand, HEFEngineInfo       │
   └─────────────────────────────────┘
                   │
   ┌── Engines/IFlightEngine ────────┐
   │ Interface + registry            │
+  │ REQUIRED + OPTIONAL methods     │
   └─────────────────────────────────┘
                   │
   ┌── Engines/FBW/ ─────────────────┐
@@ -537,6 +581,7 @@ PZ completes all file loading before the game loop starts any ticks.
                   │
   ┌── HeliSimService (dispatcher) ──┐
   │ Resolves engine, delegates 1:1  │
+  │ Guards optional methods         │
   └─────────────────────────────────┘
                   │
   ┌── Debug/ ───────────────────────┐
@@ -545,48 +590,57 @@ PZ completes all file loading before the game loop starts any ticks.
   └─────────────────────────────────┘
                   │
           ┌───────┴───────┐
-          │   HeliMove    │  (orchestrator + events)
+          │   HeliMove    │  (orchestrator, builds HEFCtx/HEFCorrectionCtx)
           │ HeliAuxiliary │  (gameplay side-effects)
           └───────────────┘
 ```
 
 No mutual runtime dependencies. Each layer only calls downward.
 Engines are self-contained: register at load time, discovered via IFlightEngine.
+Data flows through typed contracts: HEFCtx down, HEFUpdateResult up.
 
 ### Architectural Patterns
 
-**Layered Architecture** — Code is organized into layers with strict downward-only dependencies:
-Util → Core → Adapters → Flight → Debug → Root. Core modules are pure math (no game API),
-Adapters handle Bullet I/O, and the Facade orchestrates everything with zero computation.
+**Strategy Pattern** — `IFlightEngine` defines the contract (required + optional methods).
+Engines register at load time. `HeliSimService` dispatches to the active engine. `HeliMove`
+never sees the engine directly. Adding a new engine: create `Engines/NewEngine/`, implement
+interface, register, add sandbox enum option.
 
-**Strategy Pattern** — `IFlightEngine` defines the contract. Engines register at load time.
-`HeliSimService` dispatches to the active engine. `HeliMove` never sees the engine directly.
-Adding a new engine: create `Engines/NewEngine/`, implement interface, register, add sandbox enum option.
+**Typed Data Contracts** — Framework↔engine communication uses typed classes with EmmyLua
+annotations. `HEFContext.build()` constructs `HEFCtx` (framework→engine). Engines return
+`HEFUpdateResult`/`HEFGroundResult` (engine→framework). All types have `@class` annotations
+for IDE autocompletion, `CTX_FIELDS` for runtime validation, and `new()` constructors. `HEF`
+prefix distinguishes from PZ types.
 
-**Centralized Config** — `HeliConfig.lua` is the single source of truth for sandbox params and named constants.
-Engine-specific runtime tunables are owned by the engine via `getTunables()/setTunable()`.
-`HeliConfig.getEngineName()` maps the sandbox enum to an engine name string.
+**Two-Phase Frame** — OnTick: `HEFContext.build()` → engine `update(ctx)`. OnTickEvenPaused:
+`HEFCorrectionCtx.build()` → engine `applyCorrectionForces(cctx)` (optional, for 0-frame delay).
+Each phase has its own typed context with fresh reads.
 
-**Keys as Parameter** — HeliMove reads all keys once per frame into a `ctx` table, passes to engine.
-No module calls `isKeyDown()` directly except HeliMove's `readKeys()`.
+**Framework-Owned Reads** — Velocity, position, mass, physics timing, keyboard, and wall
+blocking are read once per frame by the framework (`HEFContext.build`), passed to engines via
+ctx. Engines never call `HeliVelocityAdapter`, `HeliTerrainUtil`, or `vehicle:getMass()` in
+per-frame methods. Prevents stale-read corruption from multiple adapter calls.
 
-**Dispatcher Pattern** — HeliSimService is a thin dispatcher (zero computation). Resolves engine once,
-delegates all calls 1:1. HeliMove only talks to HeliSimService.
+**Centralized Config** — `HeliConfig.lua` is the single source of truth for sandbox params and
+named constants. Engine-specific runtime tunables owned by the engine via `getTunables()/setTunable()`.
+Each engine owns its own sandbox namespace (e.g., `SandboxVars.FBW.*`).
 
-**Module Lifecycle** — `HeliMove.onFlightInit(fn)` and `HeliMove.onFlightCleanup(fn)` allow modules to
-self-register initialization/cleanup callbacks. Adding a new subsystem (e.g., HeliTurbulence) doesn't
-require editing HeliMove — just call `HeliMove.onFlightInit(myInitFn)`.
+**Dispatcher Pattern** — HeliSimService resolves engine once, delegates all calls 1:1. Guards
+optional methods with existence checks. Full EmmyLua annotations for IDE autocompletion.
+
+**Module Lifecycle** — `HeliMove.onFlightInit(fn)` / `onFlightCleanup(fn)` for self-registration.
+Flight state init runs before ctx build to ensure clean adapter state on first frame.
 
 **Explicit Flight State** — `_flightState` is one of: `inactive`, `warmup`, `airborne`.
 Ground and engine-off paths set `_flightState = inactive` (triggers re-init next frame).
-
-**Per-Frame Cache** — `HeliTerrainUtil.invalidateBlockedCache()` eliminates redundant isBlocked grid scans
-between HeliInputProcessor and HeliSimService wall-blocking in the same frame.
 
 ### Change Scenario Matrix
 
 | Change scenario | Files affected | Folder |
 |----------------|---------------|--------|
+| New ctx field for engines | HEFContext.lua (annotation + CTX_FIELDS + builder) | HEF/ |
+| New correction-phase field | HEFCorrectionCtx.lua (same pattern) | HEF/ |
+| New result field | HEFUpdateResult.lua or HEFGroundResult.lua | HEF/ |
 | New sandbox parameter | HeliConfig + sandbox-options.txt | Util/ |
 | Add new flight engine | New Engines/X/ folder, implement IFlightEngine, add sandbox enum | Engines/ |
 | FBW PD controller tuning | FBWEngine tunables (auto-discovered by /hef) | Engines/FBW/ |
@@ -595,9 +649,9 @@ between HeliInputProcessor and HeliSimService wall-blocking in the same frame.
 | FBW add filter (turbulence) | FBWFilters + FBWEngine (add stage) | Engines/FBW/ |
 | FBW swap sim model | FBWRawSim only | Engines/FBW/ |
 | Shared quaternion math | Quaternion.lua or RotationMatrix.lua | Models/ |
-| PZ exposes velocity setter | HeliVelocityAdapter only | Adapters/ |
+| PZ exposes velocity setter | HeliVelocityAdapter + HEFContext builder | Adapters/ + HEF/ |
 | Force application changes | HeliForceAdapter only | Adapters/ |
-| Wall collision detection | HeliTerrainUtil only | Util/ |
+| Wall collision detection | HeliTerrainUtil (+ HEFContext builder reads it) | Util/ |
 | Gas consumption, lights | HeliAuxiliary only | root |
 | New gameplay system | New file + HeliMove.onFlightInit | root |
 
@@ -631,17 +685,26 @@ between HeliInputProcessor and HeliSimService wall-blocking in the same frame.
 
 ## Verified Working
 
+**Pre-HEF (verified before restructuring):**
 - **Hover stability**: Zero drift, zero horizontal speed for 20+ seconds. Gravity comp avg vY < 0.02.
 - **Yaw hard lock**: 0.000° heading drift across 3000+ straight-flight frames.
 - **Descent from hover**: 5/8 descents perfectly clean (zero horizontal thrust). Noise floor effective.
-- **Braking**: Error-based PD transition + soft anchor. PD stays active during deceleration (smooth). (NEEDS RE-VERIFICATION with current code)
 - **Thrust direction clamping**: 30° max lead angle works — delta locked at exactly 30° during sustained turns.
 - **Sim virtual inertia**: Sim velocity blends at 5%/frame. Eliminates instant velocity mismatch on re-anchor.
 - **Single center wheel**: Dampener bypass works (wheelCount=1 > 0). Reduced torque source.
-- **Direction reversal unclamped**: Thrust clamping skipped when angle > 90° from movement (direction reversal). (NEEDS IN-GAME VERIFICATION)
-- **Separated yaw/tilt rotation**: `_yawDeg` (scalar) + `_tiltQuat` (quaternion). No Euler feedback loop, no gimbal lock, no branch ambiguity. Init yaw via forward-vector projection. (NEEDS IN-GAME VERIFICATION)
-- **Error-based PD/damping**: PD stays active during deceleration (error > 0.5m). No harsh force transition. (NEEDS IN-GAME VERIFICATION)
-- **Soft anchor**: Replaces hard sim-snap. Gradual blend at low speed, no discontinuity. (NEEDS IN-GAME VERIFICATION)
+
+**Needs re-verification after HEF restructuring:**
+- Hover stability (Quaternion model swap: CustomQuaternion → Models/Quaternion)
+- Yaw (FBWOrientation uses Quaternion.fromAxisAngle instead of CustomQuaternion.fromAngleAxis)
+- Full 360° rotation without heading drift
+- Vertical ascend/descend (FBWEngine absorbed vertical from HeliMove)
+- Ground liftoff/landing (updateGround path)
+- Engine-off fall (framework-level PD, no engine involvement)
+- `/hef show`, `/hef pgain 5`, `/hef reset` through dispatcher chain
+- Sandbox UI: FlightEngine dropdown with "FBW" option
+- Braking / error-based PD transition / soft anchor
+- FA-off (flight assist off) coast mode
+- Flight data CSV recording (`/hef record`)
 
 ---
 
@@ -652,15 +715,21 @@ HeliSimulation, HeliForceController) restructured into Util → Core → Adapter
 Plan: `C:\Users\butt3rkeks\.claude\plans\fluttering-discovering-spark.md`
 
 **Phase 2 — HEF framework**: Core/Flight modules moved into `Engines/FBW/` (strategy pattern).
-IFlightEngine interface, thin HeliSimService dispatcher, Models/ shared data structures.
+IFlightEngine interface (required + optional methods), thin HeliSimService dispatcher,
+Models/ shared data structures, typed data contracts (HEFCtx, HEFCorrectionCtx, result classes).
+Framework owns all per-frame reads (velocity, position, mass, terrain, keyboard, physics timing)
+via `HEFContext.build()` — engines receive ctx, never call adapters directly.
+Each engine owns its sandbox namespace. EmmyLua annotations on all engine-facing surfaces.
 Plan: `C:\Users\butt3rkeks\.claude\plans\nifty-munching-pearl.md`
 
 Benefits:
-- Swap entire flight engine via sandbox setting
+- Swap entire flight engine via sandbox setting (`HEF.FlightEngine` enum)
 - New engines are self-contained folders, no framework edits needed
 - Shared Models (Quaternion, RotationMatrix) reusable across engines
 - Auto-discovery of tunables and commands via interface
-- HeliMove is engine-agnostic — builds ctx, reads results
+- HeliMove is engine-agnostic — builds typed ctx, reads typed results
+- IDE autocompletion for engine authors via EmmyLua `@class` on all data contracts
+- Framework-owned reads prevent stale-read bugs from multiple adapter calls
 
 ---
 
