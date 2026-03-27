@@ -183,7 +183,7 @@ function FBWEngine.update(ctx)
 
     if freeMode and noInput then
         local _, _, svx, svz = FBWRawSim.getState()
-        local actualSpeed = math.sqrt(ctx.velX * ctx.velX + ctx.velZ * ctx.velZ)
+        local actualSpeed = VelocityUtil.horizontalSpeed(ctx.velX, ctx.velZ)
         if actualSpeed < HeliConfig.FA_OFF_DEADZONE then
             desiredHX, desiredHZ = 0, 0
             FBWEngine.initFlight(vehicle)
@@ -245,7 +245,7 @@ function FBWEngine.update(ctx)
     -- 18. Dual-path activation
     local errX, errZ, errRateX, errRateZ = FBWErrorTracker.getPositionError()
     local errMag = math.sqrt(errX * errX + errZ * errZ)
-    local hSpeedActual = math.sqrt(velX * velX + velZ * velZ)
+    local hSpeedActual = VelocityUtil.horizontalSpeed(velX, velZ)
     local dualPathActive = FBWEngine.isWarmedUp() and
         (hasHInput or errMag > HeliConfig.DUAL_PATH_ERROR_THRESHOLD or hSpeedActual > HeliConfig.DUAL_PATH_SPEED_THRESHOLD)
 
@@ -260,7 +260,7 @@ function FBWEngine.update(ctx)
     end
 
     -- 20. Display speed from sim velocity
-    local displaySpeed = math.sqrt(simVelX * simVelX + simVelZ * simVelZ) * 3.6  -- m/s → km/h
+    local displaySpeed = CoordUtil.msToKmh(VelocityUtil.horizontalSpeed(simVelX, simVelZ))
 
     -- 21. Return results
     return {
@@ -293,40 +293,13 @@ end
 --- @param ctx HEFCtx
 --- @return HEFGroundResult
 function FBWEngine.updateGround(ctx)
-    local vehicle = ctx.vehicle
-    local keys = ctx.keys
-    local mass = ctx.mass
-    local velX = ctx.velX
-    local velY = ctx.velY
-    local velZ = ctx.velZ
-    local groundVelMag = math.abs(velX) + math.abs(velY) + math.abs(velZ)
-
-    local liftoff = false
-
-    if keys.w and vehicle:getRemainingFuelPercentage() > 0 then
-        vehicle:setPhysicsActive(true)
-        local ascendSpeed = HeliConfig.get("ascend")
-        local gravity = HeliConfig.get("gravity")
-        if ctx.subSteps > 0 then
-            local Kp = HeliConfig.get("kp")
-            local liftFy = Kp * (ascendSpeed - velY) * mass * ctx.subSteps + mass * gravity * ctx.subSteps
-            HeliForceAdapter.applyForceImmediate(vehicle,
-                -velX * mass * HeliConfig.GROUND_VELOCITY_KILL,
-                liftFy,
-                -velZ * mass * HeliConfig.GROUND_VELOCITY_KILL)
-        end
-        liftoff = true
-    elseif groundVelMag > HeliConfig.GROUND_VELOCITY_THRESHOLD then
-        HeliForceAdapter.applyForceImmediate(vehicle,
-            -velX * mass * HeliConfig.GROUND_VELOCITY_KILL,
-            -velY * mass * HeliConfig.GROUND_VELOCITY_KILL,
-            -velZ * mass * HeliConfig.GROUND_VELOCITY_KILL)
-    end
-
-    return {
-        liftoff = liftoff,
-        displaySpeed = 0,
-    }
+    return GroundModel.update(ctx, {
+        velocityKillFactor = HeliConfig.GROUND_VELOCITY_KILL,
+        velocityThreshold  = HeliConfig.GROUND_VELOCITY_THRESHOLD,
+        ascendSpeed        = HeliConfig.get("ascend"),
+        gravity            = HeliConfig.get("gravity"),
+        kp                 = HeliConfig.get("kp"),
+    })
 end
 
 -------------------------------------------------------------------------------------
