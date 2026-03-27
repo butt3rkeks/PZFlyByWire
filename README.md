@@ -46,7 +46,7 @@ The included Fly-By-Wire engine replaces teleport-based movement with force-base
 | Descend Speed | 14.0 | S key descent speed |
 | Gravity Fall Speed | 24.5 | Fall speed when engine off |
 | Engine Dead Fall Speed | 35.0 | Fall speed when engine destroyed |
-| Responsiveness Gain | 8.0 | Vertical responsiveness (also `/hef kp`) |
+| Responsiveness Gain | 8.0 | Vertical responsiveness (also `/hef verticalGain`) |
 | Max Horizontal Speed | 450.0 | Speed at maximum tilt |
 | Braking Multiplier | 0.05 | How quickly the helicopter stops |
 
@@ -62,18 +62,18 @@ Type `/hef` in chat. Commands auto-discover from the active engine.
 /hef log      — toggle console logging
 /hef snap     — detailed state dump to chat
 /hef record   — toggle CSV flight data recording
-/hef <name> <value> — set any tunable (e.g. /hef pgain 5)
+/hef <name> <value> — set any tunable (e.g. /hef positionProportionalGain 5)
 ```
 
 ### FBW Runtime Tunables (session-only, not saved)
 | Tunable | Default | Description |
 |---------|---------|-------------|
-| pgain | 7.0 | Horizontal position correction strength |
-| dgain | 0.3 | Horizontal correction damping |
-| maxerr | 10.0 | Maximum correction distance (meters) |
-| fstopgain | 0.3 | Braking sharpness (0.3=smooth, 0.8=snappy) |
-| yawgain | 0.9 | Heading hold strength |
-| autolevel | 1.0 | How fast tilt returns to level |
+| positionProportionalGain | 7.0 | Horizontal position correction strength |
+| positionDerivativeGain | 0.3 | Horizontal correction damping |
+| maxPositionError | 10.0 | Maximum correction distance (meters) |
+| finalStopDampingGain | 0.3 | Braking sharpness (0.3=smooth, 0.8=snappy) |
+| yawCorrectionGain | 0.9 | Heading hold strength |
+| autoLevelSpeed | 1.0 | How fast tilt returns to level |
 
 ## For Engine Authors
 
@@ -121,8 +121,8 @@ Every frame, your engine receives a typed `HEFCtx` table (see `HEFContext.lua`):
 | fpsMultiplier | number | Frame time scaling |
 | fps | number | Current FPS (clamped) |
 | heliType | string | Helicopter type name |
-| curr_z | number | Altitude (z-levels) |
-| nowMaxZ | number | Ground height |
+| currentAltitude | number | Altitude (z-levels) |
+| groundLevelZ | number | Ground height |
 | posX, posZ | number | Vehicle position |
 | velX, velY, velZ | number | Velocity (smoothed horizontal, raw vertical) |
 | mass | number | Vehicle mass |
