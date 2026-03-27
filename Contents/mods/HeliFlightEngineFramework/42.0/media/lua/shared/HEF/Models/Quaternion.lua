@@ -4,6 +4,17 @@
     Reusable by any flight engine. Pre-allocated temp instances for
     zero-alloc hot paths (file-scope locals, never GC'd).
 
+    CONVENTIONS:
+    - Convenience methods (toEuler, getPitch, tiltPitch, fromPitchYawRoll, etc.)
+      use DEGREES. Power-user methods (fromEuler, fromAxisAngle) use RADIANS.
+    - tiltPitch/tiltRoll are body-frame (right-multiply). tiltYaw is world-frame
+      (left-multiply) — helicopters yaw relative to north, not relative to tilt.
+      For body-frame Y rotation, use rotateAround(degrees, 0, 1, 0).
+    - PZ swaps Y/Z axes: PZ-Y = horizontal, PZ-Z = vertical. The quaternion
+      math uses standard convention (Y = up). vectorY() returns the standard
+      Y axis (PZ's vertical/Z), NOT PZ's horizontal Y. Engine authors must
+      account for this when mapping quaternion axes to PZ world directions.
+
     PZ Kahlua: setmetatable works, __mul metamethod works.
 ]]
 
@@ -38,6 +49,9 @@ function Quaternion.fromAxisAngle(angle, ax, ay, az)
     return setmetatable({ w = c, x = ax * s, y = ay * s, z = az * s }, Quaternion)
 end
 
+--- @param rx number X rotation in RADIANS (see fromPitchYawRoll for degrees)
+--- @param ry number Y rotation in RADIANS
+--- @param rz number Z rotation in RADIANS
 function Quaternion.fromEuler(rx, ry, rz)
     local c1, c2, c3 = math.cos(rx / 2), math.cos(ry / 2), math.cos(rz / 2)
     local s1, s2, s3 = math.sin(rx / 2), math.sin(ry / 2), math.sin(rz / 2)
@@ -172,6 +186,8 @@ end
 
 -------------------------------------------------------------------------------------
 -- Convenience: axis vectors (local axes in world space)
+-- NOTE: These return axes in standard math convention (Y = up).
+-- PZ swaps Y/Z: vectorY() = PZ vertical (Z), vectorZ() = PZ horizontal (Y).
 -------------------------------------------------------------------------------------
 
 --- Get the local X axis in world space (row 0 of rotation matrix).
@@ -182,6 +198,7 @@ function Quaternion:vectorX()
 end
 
 --- Get the local Y axis in world space (row 1 of rotation matrix).
+--- In PZ: this is the VERTICAL axis (PZ-Z), not PZ-Y.
 --- @return number x, number y, number z
 function Quaternion:vectorY()
     local _, _, _, r10, r11, r12 = self:toMatrixComponents()
@@ -189,6 +206,7 @@ function Quaternion:vectorY()
 end
 
 --- Get the local Z axis in world space (row 2 of rotation matrix).
+--- In PZ: this is the HORIZONTAL axis (PZ-Y), not PZ-Z.
 --- @return number x, number y, number z
 function Quaternion:vectorZ()
     local _, _, _, _, _, _, r20, r21, r22 = self:toMatrixComponents()
@@ -199,28 +217,33 @@ end
 -- Convenience: tilt (return NEW quaternion)
 -------------------------------------------------------------------------------------
 
---- Rotate around local X axis (pitch). Returns new quaternion.
+--- Rotate around local X axis (pitch). Body-frame: follows the object's own X.
+--- All tilt methods use right-multiply (body-frame). For world-frame rotation,
+--- use `Quaternion.fromAxisAngle(...) * q` explicitly (left-multiply).
 --- @param degrees number
 --- @return Quaternion
 function Quaternion:tiltPitch(degrees)
     return self * Quaternion.fromAxisAngle(math.rad(degrees), 1, 0, 0)
 end
 
---- Rotate around local Z axis (roll). Returns new quaternion.
+--- Rotate around local Z axis (roll). Body-frame: follows the object's own Z.
 --- @param degrees number
 --- @return Quaternion
 function Quaternion:tiltRoll(degrees)
     return self * Quaternion.fromAxisAngle(math.rad(degrees), 0, 0, 1)
 end
 
---- Rotate around world Y axis (yaw). Returns new quaternion.
+--- Rotate around WORLD Y axis (yaw). Unlike tiltPitch/tiltRoll, yaw is world-frame
+--- (left-multiply) because helicopters turn relative to north, not relative to tilt.
+--- Body-frame yaw on a tilted aircraft would produce a corkscrew, not a heading change.
+--- For body-frame Y rotation, use q:rotateAround(degrees, 0, 1, 0) instead.
 --- @param degrees number
 --- @return Quaternion
 function Quaternion:tiltYaw(degrees)
     return Quaternion.fromAxisAngle(math.rad(degrees), 0, 1, 0) * self
 end
 
---- General rotation: rotate around arbitrary axis. Returns new quaternion.
+--- General rotation: rotate around arbitrary local axis. Body-frame (right-multiply).
 --- @param degrees number
 --- @param ax number Axis X component
 --- @param ay number Axis Y component
