@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 750 340" font-family="Consolas, 'Courier New', monospace" font-size="11">
+  <defs>
+    <style>
+      .state { rx: 25; ry: 25; stroke-width: 2; }
+      .title { font-weight: bold; font-size: 15px; fill: #222; }
+      .subtitle { font-size: 11px; fill: #888; }
+      .state-label { font-weight: bold; font-size: 14px; }
+      .method { font-size: 10px; fill: #555; }
+      .condition { font-size: 10px; fill: #333; font-style: italic; }
+      .arrow { stroke: #666; stroke-width: 1.8; fill: none; marker-end: url(#ah); }
+      .self-arrow { stroke: #666; stroke-width: 1.5; fill: none; marker-end: url(#ah); }
+    </style>
+    <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#666"/>
+    </marker>
+  </defs>
+
+  <text x="375" y="25" text-anchor="middle" class="title">Flight State Machine</text>
+  <text x="375" y="42" text-anchor="middle" class="subtitle">HeliMove._flightState  |  Engine lifecycle method calls shown per transition</text>
+
+  <!-- INACTIVE state -->
+  <rect x="40" y="110" width="170" height="100" class="state" fill="#f5e0e0" stroke="#cc7b7b"/>
+  <text x="125" y="145" text-anchor="middle" class="state-label" fill="#8c2a2a">INACTIVE</text>
+  <text x="125" y="165" text-anchor="middle" class="method">On ground, engine off,</text>
+  <text x="125" y="178" text-anchor="middle" class="method">or exiting vehicle</text>
+  <text x="125" y="198" text-anchor="middle" class="method">dualPath = false</text>
+
+  <!-- WARMUP state -->
+  <rect x="290" y="110" width="170" height="100" class="state" fill="#fef3e0" stroke="#d4a44a"/>
+  <text x="375" y="145" text-anchor="middle" class="state-label" fill="#8a6a10">WARMUP</text>
+  <text x="375" y="165" text-anchor="middle" class="method">Re-anchoring sim to</text>
+  <text x="375" y="178" text-anchor="middle" class="method">actual position</text>
+  <text x="375" y="198" text-anchor="middle" class="method">dualPath = false</text>
+
+  <!-- AIRBORNE state -->
+  <rect x="540" y="110" width="170" height="100" class="state" fill="#e0f0e0" stroke="#6ab06a"/>
+  <text x="625" y="145" text-anchor="middle" class="state-label" fill="#2d7d46">AIRBORNE</text>
+  <text x="625" y="165" text-anchor="middle" class="method">Full flight physics</text>
+  <text x="625" y="178" text-anchor="middle" class="method">engine.update(ctx)</text>
+  <text x="625" y="198" text-anchor="middle" class="method">dualPath from engine</text>
+
+  <!-- INACTIVE -> WARMUP -->
+  <line x1="210" y1="140" x2="290" y2="140" class="arrow"/>
+  <text x="250" y="105" text-anchor="middle" class="condition">enter helicopter +</text>
+  <text x="250" y="118" text-anchor="middle" class="condition">engine running</text>
+  <text x="250" y="85" text-anchor="middle" class="method" fill="#2d7d46">resetFlightState()</text>
+  <text x="250" y="72" text-anchor="middle" class="method" fill="#2d7d46">initFlight(vehicle)</text>
+
+  <!-- WARMUP -> AIRBORNE -->
+  <line x1="460" y1="140" x2="540" y2="140" class="arrow"/>
+  <text x="500" y="105" text-anchor="middle" class="condition">isWarmedUp()</text>
+  <text x="500" y="118" text-anchor="middle" class="condition">returns true</text>
+
+  <!-- WARMUP self-loop (tickWarmup) -->
+  <path d="M 375,110 C 375,70 420,65 420,110" class="self-arrow"/>
+  <text x="425" y="75" class="method" fill="#8a6a10">tickWarmup()</text>
+  <text x="425" y="88" class="method" fill="#8a6a10">initFlight(vehicle)</text>
+
+  <!-- AIRBORNE -> INACTIVE (engine off) -->
+  <path d="M 580,210 C 580,280 170,280 130,210" class="arrow"/>
+  <text x="375" y="268" text-anchor="middle" class="condition">engine off  OR  below airborne margin  OR  exit vehicle</text>
+
+  <!-- AIRBORNE -> INACTIVE (engine dead) -->
+  <text x="375" y="290" text-anchor="middle" class="method" fill="#8c2a2a">engineDead: framework calls ISVehicleMenu.onShutOff()</text>
+
+  <!-- Legend -->
+  <rect x="40" y="310" width="670" height="22" rx="4" ry="4" fill="#fafafa" stroke="#ddd"/>
+  <text x="55" y="325" class="method">Warmup default: 10 frames (HeliConfig.GetWarmupFrames)  |  Airborne margin: 0.6 Z-levels above ground</text>
+</svg>

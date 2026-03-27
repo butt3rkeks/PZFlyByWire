@@ -7,6 +7,8 @@ For the engine authoring API, see [DEVELOPER.md](DEVELOPER.md). For configuratio
 
 ## Architecture Overview
 
+![FBW Data Flow Pipeline](docs/fbw-pipeline.svg)
+
 ### Original (Teleport-Based, Debug Required)
 - Uses debug reflection to access `vehicle.jniTransform` (a Bullet physics Transform)
 - Directly modifies `jniTransform.origin` (position) by adding deltas
@@ -33,6 +35,8 @@ For the engine authoring API, see [DEVELOPER.md](DEVELOPER.md). For configuratio
 ---
 
 ## Frame Timing — Verified
+
+![Frame Timing Diagram](docs/frame-timing.svg)
 
 **Source-verified** from IngameState.java, IsoWorld.java, WorldSimulation.java, BaseVehicle.java:
 
@@ -95,6 +99,8 @@ on these frames. PD correction is still skipped (negligible error at 120+ FPS in
 ---
 
 ## Rotation System
+
+![Rotation System](docs/rotation-system.svg)
 
 ### Separated Yaw + Tilt Architecture
 - `_yawDeg` (scalar): heading in degrees, PZ convention. No gimbal ambiguity.

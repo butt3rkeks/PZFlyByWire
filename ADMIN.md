@@ -4,6 +4,8 @@ Configuration reference for server admins and advanced users.
 
 ## Sandbox Options
 
+![Parameter Priority](docs/param-priority.svg)
+
 Configured via the sandbox settings UI (game setup or server config). Persisted per-save.
 
 ### Framework Settings (HEF page)

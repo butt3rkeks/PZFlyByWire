@@ -16,6 +16,10 @@ HeliMove (orchestrator)
 
 Your engine receives a typed `HEFCtx` table every frame and returns results. The framework handles event registration, velocity smoothing, terrain scanning, wall detection, ghost mode, gas consumption, and all gameplay side-effects.
 
+![Architecture Diagram](docs/architecture.svg)
+
+![Flight State Machine](docs/flight-states.svg)
+
 ## Quick Start
 
 ### 1. Create your engine config

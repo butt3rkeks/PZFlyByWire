@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520" font-family="Consolas, 'Courier New', monospace" font-size="11">
+  <defs>
+    <style>
+      .box { rx: 5; ry: 5; stroke-width: 1.5; }
+      .title { font-weight: bold; font-size: 15px; fill: #222; }
+      .subtitle { font-size: 11px; fill: #888; }
+      .phase-header { font-weight: bold; font-size: 13px; }
+      .step { font-size: 11px; fill: #333; }
+      .detail { font-size: 10px; fill: #777; }
+      .delay-tag { font-size: 10px; font-weight: bold; }
+      .arrow { stroke: #888; stroke-width: 1.5; fill: none; marker-end: url(#ah); }
+      .force-arrow { stroke-width: 2; fill: none; marker-end: url(#ah-force); }
+      .timeline { stroke: #ccc; stroke-width: 1; stroke-dasharray: 4,3; }
+    </style>
+    <marker id="ah" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#888"/>
+    </marker>
+    <marker id="ah-force" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#2d7d46"/>
+    </marker>
+  </defs>
+
+  <text x="400" y="25" text-anchor="middle" class="title">Two-Phase Frame Timing</text>
+  <text x="400" y="42" text-anchor="middle" class="subtitle">Source: IngameState.java, WorldSimulation.java, BaseVehicle.java</text>
+
+  <!-- Frame N header -->
+  <rect x="30" y="55" width="740" height="28" class="box" fill="#f0f0f0" stroke="#aaa"/>
+  <text x="400" y="73" text-anchor="middle" class="phase-header" fill="#444">Frame N  (IngameState.updateInternal)</text>
+
+  <!-- Phase 1: OnTickEvenPaused -->
+  <rect x="45" y="95" width="330" height="155" class="box" fill="#e8f8e8" stroke="#6ab06a"/>
+  <text x="210" y="115" text-anchor="middle" class="phase-header" fill="#2d7d46">Phase 1: OnTickEvenPaused</text>
+  <text x="210" y="132" text-anchor="middle" class="detail">Before physics  (L1280)</text>
+
+  <text x="65" y="155" class="step">1. HEFCorrectionCtx.build()</text>
+  <text x="85" y="170" class="detail">Fresh velocity read (post-previous-physics)</text>
+
+  <text x="65" y="192" class="step">2. engine.applyCorrectionForces(cctx)</text>
+  <text x="85" y="207" class="detail">Horizontal PD correction forces</text>
+
+  <rect x="220" y="218" width="140" height="22" rx="10" ry="10" fill="#d4edda" stroke="#6ab06a"/>
+  <text x="290" y="233" text-anchor="middle" class="delay-tag" fill="#2d7d46">0-frame delay</text>
+
+  <!-- Physics step -->
+  <rect x="45" y="265" width="710" height="70" class="box" fill="#fff3e0" stroke="#e6a020"/>
+  <text x="400" y="285" text-anchor="middle" class="phase-header" fill="#b07000">Bullet Physics Step</text>
+  <text x="400" y="302" text-anchor="middle" class="detail">WorldSimulation.updatePhysic()  (L89-98)</text>
+
+  <text x="120" y="322" class="step">Sub-step loop: applyAccumulatedImpulses  +  Bullet.stepSimulation(0.01s)</text>
+
+  <!-- Force arrows into physics -->
+  <line x1="290" y1="240" x2="290" y2="265" class="force-arrow" stroke="#2d7d46"/>
+  <text x="295" y="258" class="detail" fill="#2d7d46">correction forces applied here</text>
+
+  <!-- Physics reads back -->
+  <text x="400" y="325" text-anchor="middle" class="detail">getVehiclePhysics() reads back jniLinearVelocity, jniTransform  (L130-228)</text>
+
+  <!-- Phase 2: OnTick -->
+  <rect x="425" y="95" width="330" height="155" class="box" fill="#e8e8f8" stroke="#7b7bcc"/>
+  <text x="590" y="115" text-anchor="middle" class="phase-header" fill="#44448a">Phase 2: OnTick</text>
+  <text x="590" y="132" text-anchor="middle" class="detail">After physics  (L1497)</text>
+
+  <text x="445" y="155" class="step">3. HEFContext.build()</text>
+  <text x="465" y="170" class="detail">Keys, velocity, terrain, physics timing</text>
+
+  <text x="445" y="192" class="step">4. engine.update(ctx)</text>
+  <text x="465" y="207" class="detail">Vertical thrust, rotation, sim advance</text>
+
+  <rect x="580" y="218" width="140" height="22" rx="10" ry="10" fill="#dce4f8" stroke="#7b7bcc"/>
+  <text x="650" y="233" text-anchor="middle" class="delay-tag" fill="#44448a">1-frame delay</text>
+
+  <!-- Force arrow from OnTick into NEXT frame's physics -->
+  <path d="M 650,240 L 650,360 L 400,360 L 400,375" class="force-arrow" stroke="#44448a"/>
+  <text x="530" y="373" class="detail" fill="#44448a">thrust forces applied in next physics step</text>
+
+  <!-- Next frame -->
+  <rect x="30" y="385" width="740" height="28" class="box" fill="#f0f0f0" stroke="#aaa"/>
+  <text x="400" y="403" text-anchor="middle" class="phase-header" fill="#444">Frame N+1</text>
+
+  <!-- Repeat indicator -->
+  <text x="400" y="430" text-anchor="middle" class="detail">cycle repeats...</text>
+
+  <!-- Summary table -->
+  <rect x="45" y="445" width="710" height="65" class="box" fill="#fafafa" stroke="#ddd"/>
+  <text x="65" y="463" class="step" font-weight="bold">Force Path Summary:</text>
+  <text x="65" y="480" class="step">Horizontal corrections  (OnTickEvenPaused)  ....  0-frame delay  ....  position error PD</text>
+  <text x="65" y="495" class="step">Vertical thrust         (OnTick)            ....  1-frame delay  ....  ascend/descend/hover + gravity comp</text>
+</svg>

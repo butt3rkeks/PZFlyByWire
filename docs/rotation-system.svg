@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 530" font-family="Consolas, 'Courier New', monospace" font-size="11">
+  <defs>
+    <style>
+      .box { rx: 5; ry: 5; stroke-width: 1.5; }
+      .title { font-weight: bold; font-size: 15px; fill: #222; }
+      .subtitle { font-size: 11px; fill: #888; }
+      .label { font-weight: bold; font-size: 12px; }
+      .detail { font-size: 10px; fill: #555; }
+      .math { font-size: 11px; fill: #333; font-style: italic; }
+      .good { font-size: 10px; fill: #2d7d46; font-weight: bold; }
+      .bad { font-size: 10px; fill: #cc3333; font-weight: bold; }
+      .arrow { stroke: #888; stroke-width: 1.5; fill: none; marker-end: url(#ah); }
+      .compose-arrow { stroke: #6a3a8c; stroke-width: 2; fill: none; marker-end: url(#ah-p); }
+      .output-arrow { stroke: #2d7d46; stroke-width: 2; fill: none; marker-end: url(#ah-g); }
+    </style>
+    <marker id="ah" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#888"/>
+    </marker>
+    <marker id="ah-p" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#6a3a8c"/>
+    </marker>
+    <marker id="ah-g" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#2d7d46"/>
+    </marker>
+  </defs>
+
+  <text x="390" y="25" text-anchor="middle" class="title">Separated Yaw + Tilt Rotation System</text>
+  <text x="390" y="42" text-anchor="middle" class="subtitle">FBWOrientation.lua — no Euler feedback loop, no gimbal lock</text>
+
+  <!-- Two state boxes side by side -->
+  <!-- Yaw state -->
+  <rect x="50" y="65" width="280" height="110" class="box" fill="#fef3e0" stroke="#d4a44a"/>
+  <text x="190" y="88" text-anchor="middle" class="label" fill="#8a6a10">_yawDeg</text>
+  <text x="190" y="105" text-anchor="middle" class="detail">Scalar (degrees)</text>
+  <text x="190" y="125" text-anchor="middle" class="math">Heading: north = 0, clockwise positive</text>
+  <text x="190" y="145" text-anchor="middle" class="detail">No gimbal ambiguity (it's just a number)</text>
+  <text x="190" y="162" text-anchor="middle" class="good">Yaw lock: _yawDeg = _simYaw</text>
+
+  <!-- Tilt state -->
+  <rect x="450" y="65" width="280" height="110" class="box" fill="#e8e8f8" stroke="#7b7bcc"/>
+  <text x="590" y="88" text-anchor="middle" class="label" fill="#44448a">_tiltQuat</text>
+  <text x="590" y="105" text-anchor="middle" class="detail">Quaternion (w, x, y, z)</text>
+  <text x="590" y="125" text-anchor="middle" class="math">Pitch + roll only, near identity when level</text>
+  <text x="590" y="145" text-anchor="middle" class="detail">Body-frame: right-multiply corrections</text>
+  <text x="590" y="162" text-anchor="middle" class="good">Clean matrix extraction (no gimbal lock)</text>
+
+  <!-- Input arrows -->
+  <text x="110" y="200" text-anchor="middle" class="detail">A/D keys</text>
+  <line x1="110" y1="205" x2="110" y2="175" class="arrow"/>
+  <text x="100" y="225" class="math">_yawDeg += delta</text>
+  <text x="100" y="240" class="detail">(scalar addition)</text>
+
+  <text x="510" y="200" text-anchor="middle" class="detail">Arrow keys</text>
+  <line x1="510" y1="205" x2="510" y2="175" class="arrow"/>
+  <text x="490" y="225" class="math">_tiltQuat = _tiltQuat * nqx * nqz</text>
+  <text x="490" y="240" class="detail">(body-frame right-multiply)</text>
+
+  <!-- Composition -->
+  <rect x="200" y="270" width="380" height="50" class="box" fill="#f0e8f5" stroke="#a07bc4"/>
+  <text x="390" y="290" text-anchor="middle" class="label" fill="#6a3a8c">Compose for Output</text>
+  <text x="390" y="308" text-anchor="middle" class="math">fullQ = fromAxisAngle(rad(_yawDeg), 0, 1, 0) * _tiltQuat</text>
+
+  <line x1="190" y1="175" x2="300" y2="270" class="compose-arrow"/>
+  <line x1="590" y1="175" x2="480" y2="270" class="compose-arrow"/>
+
+  <!-- Outputs from composition -->
+  <!-- setAngles -->
+  <rect x="50" y="355" width="200" height="45" class="box" fill="#d4edda" stroke="#6ab06a"/>
+  <text x="150" y="375" text-anchor="middle" class="label" fill="#2d7d46">setAngles()</text>
+  <text x="150" y="392" text-anchor="middle" class="detail">fullQ.toEuler() -> degrees</text>
+  <line x1="310" y1="320" x2="200" y2="355" class="output-arrow"/>
+
+  <!-- Forward direction -->
+  <rect x="290" y="355" width="200" height="45" class="box" fill="#d4edda" stroke="#6ab06a"/>
+  <text x="390" y="375" text-anchor="middle" class="label" fill="#2d7d46">Forward Direction</text>
+  <text x="390" y="392" text-anchor="middle" class="detail">fwdX = R02, fwdZ = R22</text>
+  <line x1="390" y1="320" x2="390" y2="355" class="output-arrow"/>
+
+  <!-- Body angles -->
+  <rect x="530" y="355" width="200" height="45" class="box" fill="#d4edda" stroke="#6ab06a"/>
+  <text x="630" y="375" text-anchor="middle" class="label" fill="#2d7d46">Body Pitch/Roll</text>
+  <text x="630" y="392" text-anchor="middle" class="detail">From _tiltQuat only (heading-free)</text>
+  <line x1="470" y1="320" x2="580" y2="355" class="output-arrow"/>
+
+  <!-- Why not Euler box -->
+  <rect x="50" y="430" width="680" height="85" class="box" fill="#fff5f5" stroke="#cc7b7b"/>
+  <text x="70" y="450" class="label" fill="#8c2a2a">Why not a single quaternion with Euler feedback?</text>
+  <text x="70" y="468" class="bad">FAILED: getAngle -> fromEuler -> quat * corrections -> toEuler -> setAngles -> Bullet -> getAngle</text>
+  <text x="70" y="485" class="detail">At headings near +/-90 deg, Euler Y approaches gimbal lock. toEuler redistributes body-pitch across X and Z.</text>
+  <text x="70" y="500" class="detail">Roll auto-leveling fights the redistributed pitch, reducing effective tilt by ~40% at worst headings.</text>
+  <text x="70" y="515" class="bad">Also: atan2-based yaw extraction has branch ambiguity (PZ init Euler X=180,Y=12,Z=-180 -> extracted Y=168)</text>
+</svg>

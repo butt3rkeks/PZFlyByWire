@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 700" font-family="Consolas, 'Courier New', monospace" font-size="11">
+  <defs>
+    <style>
+      .box { rx: 5; ry: 5; stroke-width: 1.5; }
+      .stage { rx: 5; ry: 5; stroke-width: 1.5; }
+      .title { font-weight: bold; font-size: 15px; fill: #222; }
+      .subtitle { font-size: 11px; fill: #888; }
+      .stage-label { font-weight: bold; font-size: 12px; }
+      .io { font-size: 10px; fill: #555; }
+      .data { font-size: 10px; fill: #2d7d46; font-weight: bold; }
+      .arrow { stroke: #888; stroke-width: 1.5; fill: none; marker-end: url(#ah); }
+      .split-arrow { stroke: #888; stroke-width: 1.2; fill: none; marker-end: url(#ah); }
+      .output-arrow { stroke: #2d7d46; stroke-width: 2; fill: none; marker-end: url(#ah-g); }
+      .num { font-size: 11px; font-weight: bold; fill: #fff; }
+      .num-bg { fill: #666; }
+    </style>
+    <marker id="ah" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#888"/>
+    </marker>
+    <marker id="ah-g" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#2d7d46"/>
+    </marker>
+  </defs>
+
+  <text x="410" y="25" text-anchor="middle" class="title">FBW Engine Data Flow Pipeline</text>
+  <text x="410" y="42" text-anchor="middle" class="subtitle">FBWEngine.update(ctx) — one frame of airborne flight</text>
+
+  <!-- Stage 1: Input -->
+  <circle cx="52" cy="78" r="11" class="num-bg"/>
+  <text x="52" y="82" text-anchor="middle" class="num">1</text>
+  <rect x="70" y="60" width="310" height="45" class="stage" fill="#e8f4f8" stroke="#7bb8cc"/>
+  <text x="225" y="80" text-anchor="middle" class="stage-label" fill="#2a7a8c">FBWInputProcessor</text>
+  <text x="225" y="95" text-anchor="middle" class="io">ctx.keys + ctx.blocked + HeliList rates</text>
+  <text x="415" y="82" class="data">pitchDelta, yawDelta, rollDelta, isRotating</text>
+
+  <line x1="225" y1="105" x2="225" y2="125" class="arrow"/>
+
+  <!-- Stage 2: Orientation -->
+  <circle cx="52" cy="143" r="11" class="num-bg"/>
+  <text x="52" y="147" text-anchor="middle" class="num">2</text>
+  <rect x="70" y="125" width="310" height="55" class="stage" fill="#f0e8f5" stroke="#a07bc4"/>
+  <text x="225" y="145" text-anchor="middle" class="stage-label" fill="#6a3a8c">FBWOrientation</text>
+  <text x="225" y="160" text-anchor="middle" class="io">applyTilt(pitch, roll) + applyYaw(yaw)</text>
+  <text x="225" y="173" text-anchor="middle" class="io">_yawDeg (scalar) + _tiltQuat (quaternion)</text>
+  <text x="415" y="143" class="data">fwdX, fwdZ  (forward direction)</text>
+  <text x="415" y="158" class="data">angleZ, angleX  (body pitch/roll)</text>
+
+  <!-- Output: setAngles -->
+  <rect x="620" y="125" width="170" height="30" rx="4" ry="4" fill="#d4edda" stroke="#6ab06a"/>
+  <text x="705" y="145" text-anchor="middle" class="stage-label" fill="#2d7d46">ctx.setAngles()</text>
+  <line x1="580" y1="140" x2="620" y2="140" class="output-arrow"/>
+
+  <line x1="225" y1="180" x2="225" y2="200" class="arrow"/>
+
+  <!-- Stage 3: Yaw Controller -->
+  <circle cx="52" cy="218" r="11" class="num-bg"/>
+  <text x="52" y="222" text-anchor="middle" class="num">3</text>
+  <rect x="70" y="200" width="310" height="45" class="stage" fill="#fef3e0" stroke="#d4a44a"/>
+  <text x="225" y="220" text-anchor="middle" class="stage-label" fill="#8a6a10">FBWYawController</text>
+  <text x="225" y="235" text-anchor="middle" class="io">track simYaw during rotation, hard lock on release</text>
+  <text x="415" y="222" class="data">simYaw  (intended heading)</text>
+
+  <line x1="225" y1="245" x2="225" y2="265" class="arrow"/>
+
+  <!-- Stage 4: Wall blocking + Filters -->
+  <circle cx="52" cy="293" r="11" class="num-bg"/>
+  <text x="52" y="297" text-anchor="middle" class="num">4</text>
+  <rect x="70" y="270" width="310" height="55" class="stage" fill="#e8f8e8" stroke="#6ab06a"/>
+  <text x="225" y="290" text-anchor="middle" class="stage-label" fill="#2d7d46">FBWFilters</text>
+  <text x="225" y="305" text-anchor="middle" class="io">noiseFloor + thrustDecompose + speedClamp + dirClamp</text>
+  <text x="225" y="318" text-anchor="middle" class="io">wall pre-blocking zeroes pitch/roll in blocked dirs</text>
+  <text x="415" y="293" class="data">desiredVelX, desiredVelZ  (target velocity)</text>
+  <text x="415" y="308" class="data">totalSpeed, hasHInput</text>
+
+  <line x1="225" y1="325" x2="225" y2="345" class="arrow"/>
+
+  <!-- Stage 5: Sim Model -->
+  <circle cx="52" cy="370" r="11" class="num-bg"/>
+  <text x="52" y="374" text-anchor="middle" class="num">5</text>
+  <rect x="70" y="350" width="310" height="55" class="stage" fill="#e8e8f8" stroke="#7b7bcc"/>
+  <text x="225" y="370" text-anchor="middle" class="stage-label" fill="#44448a">SimModel2D</text>
+  <text x="225" y="385" text-anchor="middle" class="io">advance(desiredVel, dt, inertia)</text>
+  <text x="225" y="398" text-anchor="middle" class="io">+ soft anchor blend + heading re-anchor snap</text>
+  <text x="415" y="370" class="data">simPosX, simPosZ  (ideal trajectory)</text>
+  <text x="415" y="385" class="data">simVelX, simVelZ  (display speed)</text>
+
+  <line x1="225" y1="405" x2="225" y2="425" class="arrow"/>
+
+  <!-- Stage 6: Error Tracker -->
+  <circle cx="52" cy="448" r="11" class="num-bg"/>
+  <text x="52" y="452" text-anchor="middle" class="num">6</text>
+  <rect x="70" y="430" width="310" height="45" class="stage" fill="#f5f0e0" stroke="#c4a94d"/>
+  <text x="225" y="450" text-anchor="middle" class="stage-label" fill="#8a7520">ErrorTracker2D</text>
+  <text x="225" y="465" text-anchor="middle" class="io">record(actual, sim) + getError(maxErr) with tanh</text>
+  <text x="415" y="450" class="data">errX, errZ, errRateX, errRateZ</text>
+
+  <line x1="225" y1="475" x2="225" y2="495" class="arrow"/>
+
+  <!-- Stage 7: Force Computer -->
+  <circle cx="52" cy="523" r="11" class="num-bg"/>
+  <text x="52" y="527" text-anchor="middle" class="num">7</text>
+  <rect x="70" y="500" width="310" height="55" class="stage" fill="#fce8e8" stroke="#cc7b7b"/>
+  <text x="225" y="520" text-anchor="middle" class="stage-label" fill="#8c2a2a">FBWForceComputer</text>
+  <text x="225" y="535" text-anchor="middle" class="io">computeCorrectionForce (PD or damping)</text>
+  <text x="225" y="548" text-anchor="middle" class="io">computeThrustForce (vertical PD + gravity comp)</text>
+
+  <!-- Output: applyForce -->
+  <rect x="620" y="505" width="170" height="30" rx="4" ry="4" fill="#d4edda" stroke="#6ab06a"/>
+  <text x="705" y="525" text-anchor="middle" class="stage-label" fill="#2d7d46">ctx.applyForce()</text>
+  <line x1="380" y1="520" x2="620" y2="520" class="output-arrow"/>
+
+  <!-- Vertical model side branch -->
+  <rect x="480" y="430" width="200" height="45" class="stage" fill="#f0f0f0" stroke="#999"/>
+  <text x="580" y="450" text-anchor="middle" class="stage-label" fill="#555">FBWFlightModel</text>
+  <text x="580" y="465" text-anchor="middle" class="io">W/S/hover/fall + ceiling/landing taper</text>
+  <line x1="580" y1="475" x2="580" y2="500" class="split-arrow"/>
+  <text x="590" y="493" class="data">targetVelY, gravComp</text>
+
+  <!-- Correction path note -->
+  <rect x="70" y="570" width="720" height="48" rx="5" ry="5" fill="#fafafa" stroke="#ddd"/>
+  <text x="85" y="588" class="io" font-weight="bold">Dual-path timing:</text>
+  <text x="85" y="605" class="io">Horizontal corrections via applyCorrectionForces() on OnTickEvenPaused (0-frame delay)</text>
+  <text x="85" y="618" class="io" fill="#888">Stage 7 runs twice per frame cycle: vertical on OnTick, horizontal on OnTickEvenPaused</text>
+
+  <!-- Legend -->
+  <rect x="70" y="630" width="720" height="55" rx="5" ry="5" fill="#fafafa" stroke="#ddd"/>
+  <text x="85" y="648" class="io" font-weight="bold">Key insight:</text>
+  <text x="85" y="663" class="io">Tilt IS the throttle. Arrow keys tilt the helicopter, tilt angle maps to desired velocity,</text>
+  <text x="85" y="678" class="io">sim model tracks desired with inertia, PD controller chases sim position with physics forces.</text>
+</svg>
