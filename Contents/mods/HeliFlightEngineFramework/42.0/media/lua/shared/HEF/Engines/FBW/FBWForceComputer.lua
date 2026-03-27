@@ -21,8 +21,8 @@ FBWForceComputer = {}
 --- @param errRateX number Error rate X (frames)
 --- @param errRateZ number Error rate Z (frames)
 --- @param errMag number Error magnitude (scalar)
---- @param pgain number Proportional gain
---- @param dgain number Derivative gain
+--- @param proportionalGain number Proportional gain
+--- @param derivativeGain number Derivative gain
 --- @param velX number Current smoothed velocity X
 --- @param velZ number Current smoothed velocity Z
 --- @param mass number Vehicle mass
@@ -33,15 +33,15 @@ FBWForceComputer = {}
 --- @param faMinDamping number FA-off minimum damping speed (m/s)
 --- @return number fx, number fz Correction forces
 function FBWForceComputer.computeCorrectionForce(errX, errZ, errRateX, errRateZ, errMag,
-        pgain, dgain, velX, velZ, mass, velForceFactor,
+        proportionalGain, derivativeGain, velX, velZ, mass, velForceFactor,
         finalStopGain, isFlightAssistOff, faDeadzone, faMinDamping)
 
     local pdErrorThreshold = HeliConfig.PD_ERROR_THRESHOLD
 
     if errMag > pdErrorThreshold then
         -- PD controller: drives toward sim position
-        local fx = (errX * pgain + errRateX * dgain) * mass * velForceFactor
-        local fz = (errZ * pgain + errRateZ * dgain) * mass * velForceFactor
+        local fx = (errX * proportionalGain + errRateX * derivativeGain) * mass * velForceFactor
+        local fz = (errZ * proportionalGain + errRateZ * derivativeGain) * mass * velForceFactor
         return fx, fz
     else
         -- Final stop: velocity damping
@@ -71,22 +71,22 @@ end
 --- @param desiredVelY number Target vertical velocity
 --- @param savedVelY number Current vertical velocity
 --- @param mass number Vehicle mass
---- @param Kp number Vertical PD gain
+--- @param verticalGain number Vertical PD gain
 --- @param gravity number Gravity constant
 --- @param subSteps number Integer physics sub-steps this frame
 --- @param physicsDelta number Actual physics time this frame (seconds)
 --- @param applyGravComp boolean Whether to add gravity compensation
 --- @return number fy Vertical force
-function FBWForceComputer.computeThrustForce(desiredVelY, savedVelY, mass, Kp, gravity, subSteps, physicsDelta, applyGravComp)
+function FBWForceComputer.computeThrustForce(desiredVelY, savedVelY, mass, verticalGain, gravity, subSteps, physicsDelta, applyGravComp)
     if subSteps > 0 then
         local errorY = desiredVelY - savedVelY
-        local thrustFy = Kp * errorY * mass * subSteps
+        local thrustForceY = verticalGain * errorY * mass * subSteps
 
         if applyGravComp then
-            thrustFy = thrustFy + mass * gravity * subSteps
+            thrustForceY = thrustForceY + mass * gravity * subSteps
         end
 
-        return thrustFy
+        return thrustForceY
 
     elseif applyGravComp and physicsDelta > 0 then
         -- High FPS fallback: gravity compensation only (fractional sub-step)

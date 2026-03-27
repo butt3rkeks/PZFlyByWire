@@ -31,14 +31,14 @@ end
 -------------------------------------------------------------------------------------
 -- Throttled periodic log line to Lua console
 -------------------------------------------------------------------------------------
-function HeliDebug.periodicLog(state, curr_z, desiredHX, desiredHZ, simVX, simVZ, errX, errZ, savedVelY, keyStr)
+function HeliDebug.periodicLog(state, currentAltitude, desiredHX, desiredHZ, simVX, simVZ, errX, errZ, savedVelY, keyStr)
     if not HeliDebug.logEnabled then return end
     HeliDebug.lastLogTick = HeliDebug.lastLogTick + 1
     if HeliDebug.lastLogTick >= HeliDebug.LOG_INTERVAL then
         HeliDebug.lastLogTick = 0
         print(string.format(
             "[HEF] %s z=%.2f des=(%.1f,%.1f) simV=(%.1f,%.1f) err=(%.2f,%.2f) svy=%.1f keys=%s",
-            state, curr_z,
+            state, currentAltitude,
             desiredHX, desiredHZ,
             simVX, simVZ,
             errX, errZ,
@@ -50,13 +50,13 @@ end
 -------------------------------------------------------------------------------------
 -- Engine-off log line
 -------------------------------------------------------------------------------------
-function HeliDebug.logEngineOff(curr_z, fallSpeed, cvx, cvy, cvz)
+function HeliDebug.logEngineOff(currentAltitude, fallSpeed, currentVelX, currentVelY, currentVelZ)
     if not HeliDebug.logEnabled then return end
     HeliDebug.lastLogTick = HeliDebug.lastLogTick + 1
     if HeliDebug.lastLogTick >= HeliDebug.LOG_INTERVAL then
         HeliDebug.lastLogTick = 0
         print(string.format("[HEF] ENG_OFF z=%.2f tgt=(0,%.1f,0) vel=(%.1f,%.1f,%.1f)",
-            curr_z, -fallSpeed, cvx, cvy, cvz))
+            currentAltitude, -fallSpeed, currentVelX, currentVelY, currentVelZ))
     end
 end
 
@@ -72,7 +72,7 @@ local _recorder = {
 }
 
 -- CSV header matches writeFlightFrame column order exactly.
-local CSV_HEADER = "frame,ms,state,fps,aX,aZ,alt,vX,vY,vZ,sX,sZ,svX,svZ,eX,eZ,dvX,dvZ,dvY,sub,tilt,faOff,yawSim,yawAct,gravComp,dualPath,keys"
+local CSV_HEADER = "frame,ms,state,fps,actualX,actualZ,alt,velocityX,velocityY,velocityZ,simPosX,simPosZ,simVelX,simVelZ,errorX,errorZ,desiredVelX,desiredVelZ,desiredVelY,subSteps,tilt,flightAssistOff,yawSimulated,yawActual,gravComp,dualPath,keys"
 
 --- Start recording flight data to CSV.
 --- File is written to Zomboid user directory (PZ sandbox restriction).
@@ -137,22 +137,22 @@ end
 ---   ms        — getTimestampMs() wall clock (milliseconds, for timing analysis)
 ---   state     — flight state string (warmup/airborne)
 ---   fps       — getAverageFPS() at this frame
----   aX, aZ    — actual position (PZ world X, Y)
----   alt       — actual altitude (curr_z, Z-levels above ground datum)
----   vX,vY,vZ  — Bullet velocity (X=world east, Y=height, Z=world south)
----   sX, sZ    — simulation model position (ideal trajectory)
----   svX, svZ  — simulation model velocity
----   eX, eZ    — position error (sim - actual, after tanh saturation)
----   dvX, dvZ  — desired horizontal velocity (from tilt + heading)
----   dvY       — desired vertical velocity (ascend/descend/hover target)
----   sub       — physics sub-steps this frame (integer, from accumulator)
----   tilt      — hasTiltInput flag (1=tilt active, 0=auto-leveling/stopped)
----   faOff     — flight assist off (1=free coast mode, 0=normal)
----   yawSim    — simulation yaw (degrees, _simYaw from HeliYawController)
----   yawAct    — actual yaw (degrees, vehicle:getAngleY())
----   gravComp  — gravity compensation active (1/0)
----   dualPath  — dual-path force system active (1/0)
----   keys      — key string (U/D/L/R/W/S/a/d or "-" for none)
+---   actualX, actualZ    — actual position (PZ world X, Y)
+---   alt                 — actual altitude (currentAltitude, Z-levels above ground datum)
+---   velocityX,velocityY,velocityZ — Bullet velocity (X=world east, Y=height, Z=world south)
+---   simPosX, simPosZ    — simulation model position (ideal trajectory)
+---   simVelX, simVelZ    — simulation model velocity
+---   errorX, errorZ      — position error (sim - actual, after tanh saturation)
+---   desiredVelX, desiredVelZ — desired horizontal velocity (from tilt + heading)
+---   desiredVelY         — desired vertical velocity (ascend/descend/hover target)
+---   subSteps            — physics sub-steps this frame (integer, from accumulator)
+---   tilt                — hasTiltInput flag (1=tilt active, 0=auto-leveling/stopped)
+---   flightAssistOff     — flight assist off (1=free coast mode, 0=normal)
+---   yawSimulated        — simulation yaw (degrees, _simYaw from HeliYawController)
+---   yawActual           — actual yaw (degrees, vehicle:getAngleY())
+---   gravComp            — gravity compensation active (1/0)
+---   dualPath            — dual-path force system active (1/0)
+---   keys                — key string (U/D/L/R/W/S/a/d or "-" for none)
 function HeliDebug.writeFlightFrame(data)
     if not _recorder.active or not _recorder.writer then return end
 
@@ -164,26 +164,26 @@ function HeliDebug.writeFlightFrame(data)
         data.ms or 0,
         data.state or "?",
         data.fps or 0,
-        data.aX or 0,
-        data.aZ or 0,
+        data.actualX or 0,
+        data.actualZ or 0,
         data.alt or 0,
-        data.vX or 0,
-        data.vY or 0,
-        data.vZ or 0,
-        data.sX or 0,
-        data.sZ or 0,
-        data.svX or 0,
-        data.svZ or 0,
-        data.eX or 0,
-        data.eZ or 0,
-        data.dvX or 0,
-        data.dvZ or 0,
-        data.dvY or 0,
-        data.sub or 0,
+        data.velocityX or 0,
+        data.velocityY or 0,
+        data.velocityZ or 0,
+        data.simPosX or 0,
+        data.simPosZ or 0,
+        data.simVelX or 0,
+        data.simVelZ or 0,
+        data.errorX or 0,
+        data.errorZ or 0,
+        data.desiredVelX or 0,
+        data.desiredVelZ or 0,
+        data.desiredVelY or 0,
+        data.subSteps or 0,
         data.tilt and 1 or 0,
-        data.faOff and 1 or 0,
-        data.yawSim or 0,
-        data.yawAct or 0,
+        data.flightAssistOff and 1 or 0,
+        data.yawSimulated or 0,
+        data.yawActual or 0,
         data.gravComp and 1 or 0,
         data.dualPath and 1 or 0,
         data.keys or "-")

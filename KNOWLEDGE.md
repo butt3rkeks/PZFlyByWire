@@ -27,7 +27,7 @@ Pluggable flight engine framework for helicopter mods. Ships with the FBW (fly-b
 
 **Tilt-as-Desired PD with Reference Model** — the tilt angle IS the throttle:
 - **Simulation model** (`sim_pos`, `sim_vel`) tracks where the helicopter SHOULD be (pure math, no Bullet)
-- `sim_vel` is set DIRECTLY from `computeHorizontalTargets()` output (tilt angle x hspeed)
+- `sim_vel` is set DIRECTLY from `computeHorizontalTargets()` output (tilt angle x maxHorizontalSpeed)
 - When keys released, auto-leveling gradually reduces tilt -> `sim_vel` naturally decays to zero
 - **Visual tilt matches physics deceleration** — no separate accel/decel model
 - **Position error** (`sim_pos - actual_pos`) drives correction forces via PD controller
@@ -201,13 +201,13 @@ heading-independent, no calibration needed.
 - When keys released, tilt auto-levels -> desired velocity shrinks
 - Sim model follows tilt -> sim decelerates
 - Actual overshoots sim -> negative position error -> opposing force
-- This phase uses full PD correction (pgain=7)
+- This phase uses full PD correction (positionProportionalGain=7)
 
 ### Error-Based PD/Damping Transition
 - PD correction stays active as long as position error > 0.5m (regardless of tilt state)
 - During braking: sim stops advancing, actual overshoots → negative error → PD pushes back (smooth)
 - Velocity damping only activates when error ≤ 0.5m (final stop phase)
-- `FINAL_STOP_GAIN = 0.3` (tunable via `/hef fstopgain`), capped at 0.8
+- `FINAL_STOP_GAIN = 0.3` (tunable via `/hef finalStopDampingGain`), capped at 0.8
 - Prevents the harsh PD→damping force transition that killed velocity in 2 frames
 
 ### Soft Anchor (replaces hard sim-snap)
@@ -280,9 +280,11 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 
 ## Vehicle Script Modifications
 
-### Invisible Wheels (UH1BHuey.txt override)
-- 4 wheels with no model, zero suspension/friction
-- Bypasses 0-wheel velocity dampener (0.1x per frame)
+### Invisible Wheel (UH1BHuey.txt override)
+- Single invisible center wheel (FrontLeft at offset 0,−2.5,0), no model attached
+- Bypasses 0-wheel velocity dampener (wheelCount > 0 → velocity only capped above 34 Bullet/s)
+- Single center wheel eliminates asymmetric btRaycastVehicle ground contacts that caused torque/tilt drift with 4 spread wheels during descent
+- Zero suspension/friction (suspensionStiffness=0, wheelFriction=0)
 
 ### Other: `brakingForce=0`, `stoppingMovementForce=0`, `steeringClamp=0`
 
@@ -299,12 +301,12 @@ These are runtime overrides for experimentation — they do NOT persist across s
 
 | Command | Default | Description |
 |---------|---------|-------------|
-| `/hef pgain <v>` | 7.0 | Position error P gain |
-| `/hef dgain <v>` | 0.3 | Position error D gain (damping) |
-| `/hef maxerr <v>` | 10.0 | Max position error saturation (meters) |
-| `/hef yawgain <v>` | 0.9 | Yaw correction gain |
-| `/hef autolevel <v>` | 1.0 | Auto-leveling speed multiplier |
-| `/hef fstopgain <v>` | 0.3 | Velocity damping strength (0.3=smooth, 0.8=snappy) |
+| `/hef positionProportionalGain <v>` | 7.0 | Position error P gain |
+| `/hef positionDerivativeGain <v>` | 0.3 | Position error D gain (damping) |
+| `/hef maxPositionError <v>` | 10.0 | Max position error saturation (meters) |
+| `/hef yawCorrectionGain <v>` | 0.9 | Yaw correction gain |
+| `/hef autoLevelSpeed <v>` | 1.0 | Auto-leveling speed multiplier |
+| `/hef finalStopDampingGain <v>` | 0.3 | Velocity damping strength (0.3=smooth, 0.8=snappy) |
 
 ### Sandbox Parameters (persisted per-save, set in sandbox options UI)
 
@@ -314,12 +316,12 @@ for the current session, but the sandbox default is restored on game restart.
 | Sandbox field (FBW.*) | `/hef` shorthand | Default | Description |
 |----------------------|-----------------|---------|-------------|
 | GravityEstimate | gravity | 9.80 | Gravity compensation estimate |
-| ResponsivenessGain | kp | 8.0 | Vertical PD gain |
-| MaxHorizontalSpeed | hspeed | 90 | Max horizontal speed (m/s at max tilt) |
+| ResponsivenessGain | verticalGain | 8.0 | Vertical PD gain |
+| MaxHorizontalSpeed | maxHorizontalSpeed | 90 | Max horizontal speed (m/s at max tilt) |
 | AscendSpeed | ascend | 8.0 | Ascend speed (Bullet Y/s) |
 | DescendSpeed | descend | 14.0 | Descend speed |
 | GravityFallSpeed | fall | 24.5 | Engine-off fall speed |
-| EngineDeadFallSpeed | deadfall | 35.0 | Engine-dead fall speed |
+| EngineDeadFallSpeed | engineDeadFallSpeed | 35.0 | Engine-dead fall speed |
 
 ---
 
@@ -403,7 +405,7 @@ Reusable utilities for engine authors. Not required — engines can use raw math
 - `new(historySize, lookback)`, `:record(actualX, actualZ, desiredX, desiredZ)`, `:getError(maxError)`, `:clearHistory()`
 
 **`VerticalModel.lua`** — Default helicopter vertical behavior
-- `computeTarget(keys, velY, curr_z, fuelPercent, engineCondition, freeMode, cfg)` → targetVelY, gravComp, vBraking, engineDead
+- `computeTarget(keys, velY, currentAltitude, fuelPercent, engineCondition, freeMode, cfg)` → targetVelY, gravComp, vBraking, engineDead
 
 **`GroundModel.lua`** — Default ground hold + liftoff
 - `update(ctx, cfg)` → HEFGroundResult
@@ -412,8 +414,8 @@ Reusable utilities for engine authors. Not required — engines can use raw math
 
 **`FBWHeliConfig.lua`** — FBW parameter definitions + typed getters
 - Registers FBW params with `HeliConfig.registerParams()` at file scope
-- Sandbox-tunable: gravity, enginedead, deadfall, kp, brake, accel, decel, ascend, descend, hspeed, yawspeed
-- Runtime-only: pgain, dgain, maxerr, fstopgain, yawgain, autolevel
+- Sandbox-tunable: gravity, engineDeadCondition, engineDeadFallSpeed, verticalGain, brake, accel, decel, ascend, descend, maxHorizontalSpeed, yawRotationSpeed
+- Runtime-only: positionProportionalGain, positionDerivativeGain, maxPositionError, finalStopDampingGain, yawCorrectionGain, autoLevelSpeed
 - Typed getters on HeliConfig (extension methods): `GetGravity()`, `GetAscend()`, etc.
 - **Changes when**: FBW tuning parameter added/removed/renamed
 
@@ -447,7 +449,7 @@ Reusable utilities for engine authors. Not required — engines can use raw math
 - `set(shorthand, value)` — session-only override (nil-guarded)
 - `registerParams(params, order)` — engines register their own params at load time (see FBWHeliConfig)
 - `getParamDefs()` — returns PARAMS/PARAM_ORDER (includes registered engine params)
-- Typed getters: `GetMaxalt()`, `GetWarmup()`, `GetWalldmg()`, `GetFall()`, `GetFallgain()`
+- Typed getters: `GetMaxAltitude()`, `GetWarmupFrames()`, `GetWallDamageInterval()`, `GetEngineOffFallSpeed()`, `GetFallPdGain()`
 - Named constants for all flight model magic numbers (thresholds, margins, multipliers)
 - Physics constants: `VEL_FORCE_FACTOR`, `PD_ERROR_THRESHOLD`
 - `TARGET_FPS = 90` and `MIN_FPS = 10` — shared by all modules (no local duplicates)
@@ -762,7 +764,7 @@ Ground and engine-off paths set `_flightState = inactive` (triggers re-init next
 - **Descent from hover**: 5/8 descents perfectly clean (zero horizontal thrust). Noise floor effective.
 - **Thrust direction clamping**: 30° max lead angle works — delta locked at exactly 30° during sustained turns.
 - **Sim virtual inertia**: Sim velocity blends at 5%/frame. Eliminates instant velocity mismatch on re-anchor.
-- **Invisible 4-wheel override**: Dampener bypass works (wheelCount=4 > 0). Zero suspension/friction.
+- **Invisible wheel override**: Dampener bypass works (wheelCount=1 > 0). Single center wheel, zero suspension/friction.
 
 **Needs re-verification after HEF restructuring:**
 - Hover stability (Quaternion model swap: CustomQuaternion → Models/Quaternion)
@@ -771,7 +773,7 @@ Ground and engine-off paths set `_flightState = inactive` (triggers re-init next
 - Vertical ascend/descend (FBWEngine absorbed vertical from HeliMove)
 - Ground liftoff/landing (updateGround path)
 - Engine-off fall (framework-level PD, no engine involvement)
-- `/hef show`, `/hef pgain 5`, `/hef reset` through dispatcher chain
+- `/hef show`, `/hef positionProportionalGain 5`, `/hef reset` through dispatcher chain
 - Sandbox UI: FlightEngine string field (type engine name, default "FBW")
 - Braking / error-based PD transition / soft anchor
 - FA-off (flight assist off) coast mode

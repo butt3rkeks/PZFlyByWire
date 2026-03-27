@@ -15,7 +15,7 @@ GroundModel = {}
 --- @field velocityThreshold number Minimum velocity magnitude to apply kill force (e.g. 0.01)
 --- @field ascendSpeed number Initial liftoff speed (Bullet Y/s)
 --- @field gravity number Gravity for compensation during liftoff
---- @field kp number PD gain for liftoff thrust
+--- @field verticalGain number PD gain for liftoff thrust
 
 --- Compute ground forces. Returns liftoff flag and optional force to apply.
 --- @param ctx HEFCtx Framework context
@@ -25,22 +25,22 @@ function GroundModel.update(ctx, cfg)
     local keys = ctx.keys
     local mass = ctx.mass
     local velX, velY, velZ = ctx.velX, ctx.velY, ctx.velZ
-    local groundVelMag = math.abs(velX) + math.abs(velY) + math.abs(velZ)
+    local groundVelocityMagnitude = math.abs(velX) + math.abs(velY) + math.abs(velZ)
 
     local liftoff = false
 
     if keys.w and ctx.fuelPercent > 0 then
         ctx.setPhysicsActive(true)
         if ctx.subSteps > 0 then
-            local liftFy = cfg.kp * (cfg.ascendSpeed - velY) * mass * ctx.subSteps
-                         + mass * cfg.gravity * ctx.subSteps
+            local liftoffForceY = cfg.verticalGain * (cfg.ascendSpeed - velY) * mass * ctx.subSteps
+                               + mass * cfg.gravity * ctx.subSteps
             ctx.applyForce(
                 -velX * mass * cfg.velocityKillFactor,
-                liftFy,
+                liftoffForceY,
                 -velZ * mass * cfg.velocityKillFactor)
         end
         liftoff = true
-    elseif groundVelMag > cfg.velocityThreshold then
+    elseif groundVelocityMagnitude > cfg.velocityThreshold then
         ctx.applyForce(
             -velX * mass * cfg.velocityKillFactor,
             -velY * mass * cfg.velocityKillFactor,

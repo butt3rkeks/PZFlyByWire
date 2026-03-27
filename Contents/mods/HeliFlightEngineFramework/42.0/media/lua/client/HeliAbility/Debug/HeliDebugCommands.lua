@@ -107,7 +107,7 @@ commands["show"] = function(_)
         local wc = vehicle:getScript():getWheelCount()
         showInfo(string.format("  wheels = %d", wc))
         if wc == 0 then
-            showError("  WARNING: 0-wheel vehicle. Spawn a NEW helicopter for 4-wheel override.")
+            showError("  WARNING: 0-wheel vehicle. Spawn a NEW helicopter for wheel override.")
         end
     end
     -- Engine tunables
@@ -194,7 +194,7 @@ commands["snap"] = function(_)
         return
     end
     showInfo("--- HEF Snapshot ---")
-    showValue(string.format("State: %s  |  Z: %.2f  |  Ground: %.2f", s.state or "?", s.curr_z or 0, s.nowMaxZ or 0))
+    showValue(string.format("State: %s  |  Z: %.2f  |  Ground: %.2f", s.state or "?", s.currentAltitude or 0, s.groundLevelZ or 0))
     showValue(string.format("Desired vel: X=%.2f  Z=%.2f  |  Sim vel: X=%.2f  Z=%.2f",
         s.desiredVelX or 0, s.desiredVelZ or 0, s.simVelX or 0, s.simVelZ or 0))
     showValue(string.format("Pos error:   X=%.2f  Z=%.2f  |  Rate: X=%.3f  Z=%.3f",
@@ -208,8 +208,8 @@ commands["snap"] = function(_)
         s.keys or "-"))
     showValue(string.format("Mass=%.0f  FPS=%.0f  SubSteps=%.2f", s.mass or 0, s.fps or 0, s.subSteps or 0))
     showInfo("--- Active Tuning ---")
-    showValue(string.format("gravity=%.1f  kp=%.1f  brake=%.2f  hspeed=%.1f",
-        HeliConfig.GetGravity(), HeliConfig.GetKp(), HeliConfig.GetBrake(), HeliConfig.GetHspeed()))
+    showValue(string.format("gravity=%.1f  verticalGain=%.1f  brake=%.2f  maxHorizontalSpeed=%.1f",
+        HeliConfig.GetGravity(), HeliConfig.GetVerticalGain(), HeliConfig.GetBrake(), HeliConfig.GetMaxHorizontalSpeed()))
 end
 
 -------------------------------------------------------------------------------------

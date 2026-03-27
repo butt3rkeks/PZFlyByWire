@@ -21,18 +21,18 @@ HeliTerrainUtil.BanFlagList = {
 --- Get objects on a grid square.
 --- @param sq IsoGridSquare
 --- @return IsoGridSquare|false, table|nil objects, table|nil objectArray
-local function sqobject(sq)
+local function getSquareObjects(sq)
     if sq == nil then
         return false
     end
-    local sqObjs = sq:getObjects()
-    local sqSize = sqObjs:size()
-    local tbl = {}
-    for i = sqSize - 1, 0, -1 do
-        local obj = sqObjs:get(i)
-        table.insert(tbl, obj)
+    local squareObjects = sq:getObjects()
+    local objectCount = squareObjects:size()
+    local objectList = {}
+    for i = objectCount - 1, 0, -1 do
+        local obj = squareObjects:get(i)
+        table.insert(objectList, obj)
     end
-    return sq, sqObjs, tbl
+    return sq, squareObjects, objectList
 end
 
 --- Check if a grid square has any of the given IsoFlagType flags.
@@ -40,10 +40,10 @@ end
 --- @param flagTable table Array of IsoFlagType values
 --- @return boolean
 local function hasFlag(square, flagTable)
-    local sq, sqObjs, objTbl = sqobject(square)
-    if objTbl then
-        for i = 1, #objTbl do
-            local obj = objTbl[i]
+    local sq, squareObjects, objectList = getSquareObjects(square)
+    if objectList then
+        for i = 1, #objectList do
+            local obj = objectList[i]
             local sprite = obj:getSprite()
             if sprite and sprite:getProperties() then
                 for j = 1, #flagTable do
@@ -63,11 +63,11 @@ HeliTerrainUtil.hasFlag = hasFlag
 --- Scan downward from current Z to find the nearest solid floor.
 --- Returns the Z-level + 0.4 (soft landing margin).
 --- @param playerObj IsoPlayer
---- @param curr_z number Current helicopter height (PZ Z-levels)
+--- @param currentAltitude number Current helicopter height (PZ Z-levels)
 --- @return number Landing height (Z-level + 0.4)
-function HeliTerrainUtil.getNowMaxZ(playerObj, curr_z)
+function HeliTerrainUtil.getNowMaxZ(playerObj, currentAltitude)
     local maxZ = 0
-    local zNow = math.floor(curr_z)
+    local zNow = math.floor(currentAltitude)
     while true do
         local sq = getCell():getGridSquare(playerObj:getX(), playerObj:getY(), zNow)
         if hasFlag(sq, { IsoFlagType.solidfloor }) then
@@ -104,9 +104,9 @@ end
 --- @param playerObj IsoPlayer
 --- @param direction string "UP", "DOWN", "LEFT", or "RIGHT"
 --- @param vehicle BaseVehicle
---- @param tempVector2 Vector3f Reusable temp vector
+--- @param scratchVector Vector3f Reusable temp vector
 --- @return boolean True if blocked by walls
-function HeliTerrainUtil.isBlocked(playerObj, direction, vehicle, tempVector2)
+function HeliTerrainUtil.isBlocked(playerObj, direction, vehicle, scratchVector)
     -- Return cached result if available this frame
     if _blockedCacheValid and _blockedCache[direction] ~= nil then
         return _blockedCache[direction]
@@ -115,36 +115,36 @@ function HeliTerrainUtil.isBlocked(playerObj, direction, vehicle, tempVector2)
         _blockedCache = {}
         _blockedCacheValid = true
     end
-    local squaretable = {}
-    local playerangle = playerObj:getForwardDirection():getDirection()
+    local scannedSquares = {}
+    local playerAngle = playerObj:getForwardDirection():getDirection()
 
-    local vx = vehicle:getX()
-    local vy = vehicle:getY()
-    local vz = math.floor(vehicle:getWorldPos(0, 0, 0, tempVector2):z())
-    local rangeX1, rangeX2, rangeY1, rangeY2 = 0, 10, 0, 5
+    local vehicleX = vehicle:getX()
+    local vehicleY = vehicle:getY()
+    local vehicleZ = math.floor(vehicle:getWorldPos(0, 0, 0, scratchVector):z())
+    local scanMinForward, scanMaxForward, scanMinLateral, scanMaxLateral = 0, 10, 0, 5
 
     if direction == "DOWN" then
-        playerangle = playerangle + 60
+        playerAngle = playerAngle + 60
     elseif direction == "LEFT" then
-        playerangle = playerangle - 90
+        playerAngle = playerAngle - 90
     elseif direction == "RIGHT" then
-        playerangle = playerangle + 90
+        playerAngle = playerAngle + 90
     end
 
-    for z = rangeX1, rangeX2 do
-        for i = rangeY1, rangeY2 do
-            local vx1 = vx + z / 2 * math.cos(playerangle) + i / 3 * math.cos(playerangle + math.pi / 2)
-            local vy1 = vy + z / 2 * math.sin(playerangle) + i / 3 * math.sin(playerangle + math.pi / 2)
-            local sq1 = getCell():getGridSquare(vx1, vy1, vz)
-            if sq1 then squaretable[sq1] = 1 end
-            local vx2 = vx + z / 2 * math.cos(playerangle) + i / 3 * math.cos(playerangle - math.pi / 2)
-            local vy2 = vy + z / 2 * math.sin(playerangle) + i / 3 * math.sin(playerangle - math.pi / 2)
-            local sq2 = getCell():getGridSquare(vx2, vy2, vz)
-            if sq2 then squaretable[sq2] = 1 end
+    for z = scanMinForward, scanMaxForward do
+        for i = scanMinLateral, scanMaxLateral do
+            local probeX1 = vehicleX + z / 2 * math.cos(playerAngle) + i / 3 * math.cos(playerAngle + math.pi / 2)
+            local probeY1 = vehicleY + z / 2 * math.sin(playerAngle) + i / 3 * math.sin(playerAngle + math.pi / 2)
+            local sq1 = getCell():getGridSquare(probeX1, probeY1, vehicleZ)
+            if sq1 then scannedSquares[sq1] = 1 end
+            local probeX2 = vehicleX + z / 2 * math.cos(playerAngle) + i / 3 * math.cos(playerAngle - math.pi / 2)
+            local probeY2 = vehicleY + z / 2 * math.sin(playerAngle) + i / 3 * math.sin(playerAngle - math.pi / 2)
+            local sq2 = getCell():getGridSquare(probeX2, probeY2, vehicleZ)
+            if sq2 then scannedSquares[sq2] = 1 end
         end
     end
 
-    for k, _ in pairs(squaretable) do
+    for k, _ in pairs(scannedSquares) do
         if k then
             if hasFlag(k, HeliTerrainUtil.BanFlagList) then
                 _blockedCache[direction] = true

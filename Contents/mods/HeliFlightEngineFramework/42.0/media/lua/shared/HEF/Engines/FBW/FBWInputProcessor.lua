@@ -21,20 +21,20 @@ FBWInputProcessor = {}
 -- @param blocked table Framework-provided wall block state { up, down, left, right }
 -- @param freeMode boolean Flight assist off (skip auto-level for pitch)
 --
--- @return number ax Pitch delta (degrees)
--- @return number ay Yaw delta (degrees)
--- @return number az Roll delta (degrees)
+-- @return number pitchDelta Pitch delta (degrees)
+-- @return number yawDelta Yaw delta (degrees)
+-- @return number rollDelta Roll delta (degrees)
 -- @return boolean isRotating Whether A/D yaw keys are pressed
 -------------------------------------------------------------------------------------
 function FBWInputProcessor.computeRotationDeltas(keys, fpsMultiplier, heliType, blocked, freeMode)
-    local basicAccel = HeliList[heliType].BasicAccelerationModifier or 0.15
+    local basicAccelerationRate = HeliList[heliType].BasicAccelerationModifier or 0.15
     local maxSpeed = HeliList[heliType].MaxSpeed or 0.3
     if not HeliList[heliType].BasicAccelerationModifier then
-        basicAccel = 0.4
+        basicAccelerationRate = 0.4
         maxSpeed = 0.15
     end
 
-    local ax, ay, az = 0, 0, 0
+    local pitchDelta, yawDelta, rollDelta = 0, 0, 0
     local angle_90 = math.rad(90)
     local isRotating = false
 
@@ -44,11 +44,11 @@ function FBWInputProcessor.computeRotationDeltas(keys, fpsMultiplier, heliType, 
 
     -- Yaw (A/D keys)
     if keys.a then
-        ay = HeliConfig.GetYawspeed() * fpsMultiplier
+        yawDelta = HeliConfig.GetYawRotationSpeed() * fpsMultiplier
         isRotating = true
     end
     if keys.d then
-        ay = -HeliConfig.GetYawspeed() * fpsMultiplier
+        yawDelta = -HeliConfig.GetYawRotationSpeed() * fpsMultiplier
         isRotating = true
     end
 
@@ -56,27 +56,27 @@ function FBWInputProcessor.computeRotationDeltas(keys, fpsMultiplier, heliType, 
     if keys.up then
         if not keys.left and not keys.right then
             if angleZ < angle_90 + maxSpeed and not blocked.up then
-                ax = basicAccel * fpsMultiplier
+                pitchDelta = basicAccelerationRate * fpsMultiplier
             else
-                ax = -basicAccel * fpsMultiplier
+                pitchDelta = -basicAccelerationRate * fpsMultiplier
             end
         end
     elseif keys.down then
         if not keys.left and not keys.right then
             if angleZ > angle_90 - maxSpeed and not blocked.down then
-                ax = -basicAccel * fpsMultiplier
+                pitchDelta = -basicAccelerationRate * fpsMultiplier
             else
-                ax = basicAccel * fpsMultiplier
+                pitchDelta = basicAccelerationRate * fpsMultiplier
             end
         end
     else
         -- Auto-level pitch (skip when FA-off)
         if not freeMode then
-            local autoLevelMult = HeliConfig.GetAutolevel()
+            local autoLevelMult = HeliConfig.GetAutoLevelSpeed()
             if angleZ > angle_90 then
-                ax = -basicAccel * HeliConfig.AUTO_LEVEL_PITCH_FACTOR * (angleZ - angle_90) * fpsMultiplier * autoLevelMult
+                pitchDelta = -basicAccelerationRate * HeliConfig.AUTO_LEVEL_PITCH_FACTOR * (angleZ - angle_90) * fpsMultiplier * autoLevelMult
             elseif angleZ < angle_90 then
-                ax = basicAccel * HeliConfig.AUTO_LEVEL_PITCH_FACTOR * (angle_90 - angleZ) * fpsMultiplier * autoLevelMult
+                pitchDelta = basicAccelerationRate * HeliConfig.AUTO_LEVEL_PITCH_FACTOR * (angle_90 - angleZ) * fpsMultiplier * autoLevelMult
             end
         end
     end
@@ -85,28 +85,28 @@ function FBWInputProcessor.computeRotationDeltas(keys, fpsMultiplier, heliType, 
     if keys.left then
         if not keys.up and not keys.down then
             if angleX < angle_90 + maxSpeed and not blocked.left then
-                az = -basicAccel * fpsMultiplier
+                rollDelta = -basicAccelerationRate * fpsMultiplier
             else
-                az = basicAccel * fpsMultiplier
+                rollDelta = basicAccelerationRate * fpsMultiplier
             end
         end
     elseif keys.right then
         if not keys.up and not keys.down then
             if angleX > angle_90 - maxSpeed and not blocked.right then
-                az = basicAccel * fpsMultiplier
+                rollDelta = basicAccelerationRate * fpsMultiplier
             else
-                az = -basicAccel * fpsMultiplier
+                rollDelta = -basicAccelerationRate * fpsMultiplier
             end
         end
     else
         -- Auto-level roll (always active, even in FA-off)
-        local autoLevelMult = HeliConfig.GetAutolevel()
+        local autoLevelMult = HeliConfig.GetAutoLevelSpeed()
         if angleX > angle_90 then
-            az = basicAccel * HeliConfig.AUTO_LEVEL_ROLL_FACTOR * (angleX - angle_90) * fpsMultiplier * autoLevelMult
+            rollDelta = basicAccelerationRate * HeliConfig.AUTO_LEVEL_ROLL_FACTOR * (angleX - angle_90) * fpsMultiplier * autoLevelMult
         elseif angleX < angle_90 then
-            az = -basicAccel * HeliConfig.AUTO_LEVEL_ROLL_FACTOR * (angle_90 - angleX) * fpsMultiplier * autoLevelMult
+            rollDelta = -basicAccelerationRate * HeliConfig.AUTO_LEVEL_ROLL_FACTOR * (angle_90 - angleX) * fpsMultiplier * autoLevelMult
         end
     end
 
-    return ax, ay, az, isRotating
+    return pitchDelta, yawDelta, rollDelta, isRotating
 end

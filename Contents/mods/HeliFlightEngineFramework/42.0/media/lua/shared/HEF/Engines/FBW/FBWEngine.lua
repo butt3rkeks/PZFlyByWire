@@ -43,7 +43,7 @@ function FBWEngine.resetFlightState()
     _hasTiltInput = false
     _hasHorizontalInput = false
     _flightAssistOff = false
-    _warmupCounter = HeliConfig.GetWarmup()
+    _warmupCounter = HeliConfig.GetWarmupFrames()
     _simInitialized = false
     _prevPosX = nil
     _prevPosZ = nil
@@ -90,8 +90,8 @@ function FBWEngine.update(ctx)
     local keys = ctx.keys
     local fpsMultiplier = ctx.fpsMultiplier
     local heliType = ctx.heliType
-    local curr_z = ctx.curr_z
-    local nowMaxZ = ctx.nowMaxZ
+    local currentAltitude = ctx.currentAltitude
+    local groundLevelZ = ctx.groundLevelZ
     local blocked = ctx.blocked
 
     local freeMode = vehicle:getModData().AutoBalance == true
@@ -103,15 +103,15 @@ function FBWEngine.update(ctx)
     end
 
     -- 2. FBWInputProcessor: keys → rotation deltas
-    local ax, ay, az, isRotating = FBWInputProcessor.computeRotationDeltas(
+    local pitchDelta, yawDelta, rollDelta, isRotating = FBWInputProcessor.computeRotationDeltas(
         keys, fpsMultiplier, heliType, blocked, freeMode)
 
     -- 3. Apply tilt + yaw to FBWOrientation
-    FBWOrientation.applyTilt(ax, az)
-    FBWOrientation.applyYaw(ay)
+    FBWOrientation.applyTilt(pitchDelta, rollDelta)
+    FBWOrientation.applyYaw(yawDelta)
 
     -- 4. Yaw MPC: track intended heading, hard lock when not rotating
-    local simYaw = FBWYawController.update(FBWOrientation.getYaw(), isRotating, ay)
+    local simYaw = FBWYawController.update(FBWOrientation.getYaw(), isRotating, yawDelta)
     if not isRotating then
         FBWOrientation.setYaw(simYaw)
     end
@@ -150,7 +150,7 @@ function FBWEngine.update(ctx)
 
     -- 8. FBWFilters pipeline: noiseFloor → thrustDecomposition → speedClamp → directionClamp
     local noiseFloor = HeliConfig.TILT_NOISE_FLOOR
-    local maxHSpeed = HeliConfig.GetHspeed()
+    local maxHSpeed = HeliConfig.GetMaxHorizontalSpeed()
 
     local effectiveTilt = FBWFilters.applyNoiseFloor(totalTiltRad, noiseFloor)
 
@@ -206,12 +206,12 @@ function FBWEngine.update(ctx)
     end
 
     local fps = ctx.fps
-    local dt = 1.0 / fps
+    local deltaTime = 1.0 / fps
     local baseBrake = HeliConfig.GetBrake()
     local effectiveInertia = baseBrake * (hasHInput and HeliConfig.GetAccel() or HeliConfig.GetDecel())
 
     -- 12. Sim model advance
-    _sim:advance(desiredHX, desiredHZ, dt, effectiveInertia)
+    _sim:advance(desiredHX, desiredHZ, deltaTime, effectiveInertia)
 
     -- 13. Heading re-anchor check (skip in FA-off — coast must survive turns)
     if not _flightAssistOff then
@@ -241,27 +241,27 @@ function FBWEngine.update(ctx)
     local targetVelY, gravComp, vBraking, engineDead = FBWFlightModel.computeVerticalTarget(ctx, freeMode)
 
     -- Landing zone taper
-    if targetVelY < 0 and curr_z < nowMaxZ + HeliConfig.LANDING_ZONE_HEIGHT then
-        local landingFactor = math.max((curr_z - nowMaxZ) / HeliConfig.LANDING_ZONE_HEIGHT, 0)
+    if targetVelY < 0 and currentAltitude < groundLevelZ + HeliConfig.LANDING_ZONE_HEIGHT then
+        local landingFactor = math.max((currentAltitude - groundLevelZ) / HeliConfig.LANDING_ZONE_HEIGHT, 0)
         landingFactor = math.max(landingFactor, HeliConfig.LANDING_MIN_SPEED_FACTOR)
         targetVelY = targetVelY * landingFactor
     end
 
     -- 18. Dual-path activation
-    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxerr())
+    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxPositionError())
     local errMag = math.sqrt(errX * errX + errZ * errZ)
-    local hSpeedActual = VelocityUtil.horizontalSpeed(velX, velZ)
+    local actualHorizontalSpeed = VelocityUtil.horizontalSpeed(velX, velZ)
     local dualPathActive = FBWEngine.isWarmedUp() and
-        (hasHInput or errMag > HeliConfig.DUAL_PATH_ERROR_THRESHOLD or hSpeedActual > HeliConfig.DUAL_PATH_SPEED_THRESHOLD)
+        (hasHInput or errMag > HeliConfig.DUAL_PATH_ERROR_THRESHOLD or actualHorizontalSpeed > HeliConfig.DUAL_PATH_SPEED_THRESHOLD)
 
     -- 19. Vertical thrust
-    local Kp = HeliConfig.GetKp()
+    local verticalGain = HeliConfig.GetVerticalGain()
     local gravity = HeliConfig.GetGravity()
-    local fy = FBWForceComputer.computeThrustForce(
-        targetVelY, velY, ctx.mass, Kp, gravity,
+    local verticalForce = FBWForceComputer.computeThrustForce(
+        targetVelY, velY, ctx.mass, verticalGain, gravity,
         ctx.subSteps, ctx.physicsDelta, gravComp)
-    if fy ~= 0 then
-        ctx.applyForce(0, fy, 0)
+    if verticalForce ~= 0 then
+        ctx.applyForce(0, verticalForce, 0)
     end
 
     -- 20. Display speed from sim velocity
@@ -303,7 +303,7 @@ function FBWEngine.updateGround(ctx)
         velocityThreshold  = HeliConfig.GROUND_VELOCITY_THRESHOLD,
         ascendSpeed        = HeliConfig.GetAscend(),
         gravity            = HeliConfig.GetGravity(),
-        kp                 = HeliConfig.GetKp(),
+        verticalGain       = HeliConfig.GetVerticalGain(),
     })
 end
 
@@ -312,14 +312,14 @@ end
 -------------------------------------------------------------------------------------
 --- @param cctx HEFCorrectionCtx
 function FBWEngine.applyCorrectionForces(cctx)
-    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxerr())
+    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxPositionError())
     local errMag = math.sqrt(errX * errX + errZ * errZ)
 
     local fx, fz = FBWForceComputer.computeCorrectionForce(
         errX, errZ, errRateX, errRateZ, errMag,
-        HeliConfig.GetPgain(), HeliConfig.GetDgain(),
+        HeliConfig.GetPositionProportionalGain(), HeliConfig.GetPositionDerivativeGain(),
         cctx.velX, cctx.velZ, cctx.mass, HeliConfig.VEL_FORCE_FACTOR,
-        HeliConfig.GetFstopgain(), _flightAssistOff,
+        HeliConfig.GetFinalStopDampingGain(), _flightAssistOff,
         HeliConfig.FA_OFF_DEADZONE, HeliConfig.FA_OFF_MIN_DAMPING_SPEED)
 
     cctx.applyForce(fx, 0, fz)
@@ -332,12 +332,12 @@ end
 -- Tunables: only store the name→label mapping. All other metadata (default, min, max)
 -- comes from HeliConfig PARAMS — single source of truth.
 local TUNABLE_NAMES = {
-    { name = "pgain",     label = "P Gain" },
-    { name = "dgain",     label = "D Gain" },
-    { name = "maxerr",    label = "Max Error" },
-    { name = "fstopgain", label = "Stop Gain" },
-    { name = "yawgain",   label = "Yaw Gain" },
-    { name = "autolevel", label = "Auto-Level" },
+    { name = "positionProportionalGain", label = "P Gain" },
+    { name = "positionDerivativeGain",   label = "D Gain" },
+    { name = "maxPositionError",         label = "Max Error" },
+    { name = "finalStopDampingGain",     label = "Stop Gain" },
+    { name = "yawCorrectionGain",        label = "Yaw Gain" },
+    { name = "autoLevelSpeed",           label = "Auto-Level" },
 }
 
 function FBWEngine.getTunables()
@@ -400,7 +400,7 @@ end
 
 function FBWEngine.getDebugState()
     local simPosX, simPosZ, simVelX, simVelZ = _sim:getState()
-    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxerr())
+    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxPositionError())
     return {
         simPosX = simPosX, simPosZ = simPosZ,
         simVelX = simVelX, simVelZ = simVelZ,

@@ -19,17 +19,17 @@ HeliConfig = {}
 -------------------------------------------------------------------------------------
 local PARAMS = {
     -- Framework sandbox-tunable (HEF.* namespace, persisted per-save)
-    maxalt      = { ns = "HEF", field = "MaxAltitude",         default = 8,    min = 1,    max = 50,     desc = "Max flight ceiling (Z-levels)" },
-    warmup      = { ns = "HEF", field = "WarmupFrames",        default = 10,   min = 1,    max = 120,    desc = "Startup delay (frames before flight)" },
-    walldmg     = { ns = "HEF", field = "WallDamageInterval",  default = 60,   min = 10,   max = 600,    desc = "Ticks between wall collision damage" },
-    fall        = { ns = "HEF", field = "EngineOffFallSpeed",  default = 24.5, min = 2.0,  max = 50.0,   desc = "Engine-off fall speed (Bullet Y/s)" },
-    fallgain    = { ns = "HEF", field = "FallPDGain",          default = 8.0,  min = 1.0,  max = 20.0,   desc = "Fall PD gain (framework engine-off path)" },
+    maxAltitude         = { ns = "HEF", field = "MaxAltitude",         default = 8,    min = 1,    max = 50,     desc = "Max flight ceiling (Z-levels)" },
+    warmupFrames        = { ns = "HEF", field = "WarmupFrames",        default = 10,   min = 1,    max = 120,    desc = "Startup delay (frames before flight)" },
+    wallDamageInterval  = { ns = "HEF", field = "WallDamageInterval",  default = 60,   min = 10,   max = 600,    desc = "Ticks between wall collision damage" },
+    engineOffFallSpeed  = { ns = "HEF", field = "EngineOffFallSpeed",  default = 24.5, min = 2.0,  max = 50.0,   desc = "Engine-off fall speed (Bullet Y/s)" },
+    fallPdGain          = { ns = "HEF", field = "FallPDGain",          default = 8.0,  min = 1.0,  max = 20.0,   desc = "Fall PD gain (framework engine-off path)" },
 }
 
 -- Ordered list for consistent display in /hef show.
 -- registerParams() appends engine entries to this list.
 local PARAM_ORDER = {
-    "maxalt", "warmup", "walldmg", "fall", "fallgain",
+    "maxAltitude", "warmupFrames", "wallDamageInterval", "engineOffFallSpeed", "fallPdGain",
 }
 
 -- Runtime overrides (session-only, from /hef commands)
@@ -40,7 +40,7 @@ local _overrides = {}
 -------------------------------------------------------------------------------------
 
 --- Get a parameter value. Priority: runtime override > SandboxVars > hardcoded default.
---- @param shorthand string Parameter key (e.g., "gravity", "pgain")
+--- @param shorthand string Parameter key (e.g., "gravity", "positionProportionalGain")
 --- @return number
 function HeliConfig.get(shorthand)
     if shorthand == nil then error("HeliConfig.get: nil key") end
@@ -146,7 +146,7 @@ HeliConfig.PD_ERROR_THRESHOLD = 0.5
 -- Flight model constants (not sandbox-tunable, but named for clarity)
 -------------------------------------------------------------------------------------
 
--- Airborne detection: helicopter is "airborne" when curr_z > groundLevel + this margin.
+-- Airborne detection: helicopter is "airborne" when currentAltitude > groundLevel + this margin.
 -- Below this margin, the ground path handles velocity zeroing and liftoff.
 HeliConfig.AIRBORNE_MARGIN = 0.6
 
@@ -230,12 +230,12 @@ HeliConfig.HISTORY_SIZE = 30
 -------------------------------------------------------------------------------------
 
 --- @return number Max flight ceiling (Z-levels)
-function HeliConfig.GetMaxalt() return HeliConfig.get("maxalt") end
+function HeliConfig.GetMaxAltitude() return HeliConfig.get("maxAltitude") end
 --- @return number Startup delay (frames before flight)
-function HeliConfig.GetWarmup() return HeliConfig.get("warmup") end
+function HeliConfig.GetWarmupFrames() return HeliConfig.get("warmupFrames") end
 --- @return number Ticks between wall collision damage
-function HeliConfig.GetWalldmg() return HeliConfig.get("walldmg") end
+function HeliConfig.GetWallDamageInterval() return HeliConfig.get("wallDamageInterval") end
 --- @return number Engine-off fall speed (Bullet Y/s)
-function HeliConfig.GetFall() return HeliConfig.get("fall") end
+function HeliConfig.GetEngineOffFallSpeed() return HeliConfig.get("engineOffFallSpeed") end
 --- @return number Fall PD gain (framework engine-off path)
-function HeliConfig.GetFallgain() return HeliConfig.get("fallgain") end
+function HeliConfig.GetFallPdGain() return HeliConfig.get("fallPdGain") end

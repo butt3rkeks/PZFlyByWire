@@ -39,10 +39,10 @@ end
 -- Small error: ~linear. Large error: asymptotes to maxError.
 -------------------------------------------------------------------------------------
 local function saturateError(rawX, rawZ, maxError)
-    local rawMag = math.sqrt(rawX * rawX + rawZ * rawZ)
-    if rawMag > 0.01 then
-        local e2x = math.exp(2 * rawMag / maxError)
-        local scale = maxError * (e2x - 1) / ((e2x + 1) * rawMag)
+    local rawMagnitude = math.sqrt(rawX * rawX + rawZ * rawZ)
+    if rawMagnitude > 0.01 then
+        local expDoubleScaled = math.exp(2 * rawMagnitude / maxError)
+        local scale = maxError * (expDoubleScaled - 1) / ((expDoubleScaled + 1) * rawMagnitude)
         return rawX * scale, rawZ * scale
     end
     return rawX, rawZ
@@ -95,10 +95,10 @@ function ErrorTracker2D:getError(maxError)
     local errRateX, errRateZ = 0, 0
     local lookback = math.min(self._lookback, self._count - 1)
     if lookback >= 1 then
-        local oldIdx = ((idx - 1 - lookback + self._size) % self._size) + 1
+        local lookbackIndex = ((idx - 1 - lookback + self._size) % self._size) + 1
         local oldErrX, oldErrZ = saturateError(
-            self._desiredX[oldIdx] - self._actualX[oldIdx],
-            self._desiredZ[oldIdx] - self._actualZ[oldIdx],
+            self._desiredX[lookbackIndex] - self._actualX[lookbackIndex],
+            self._desiredZ[lookbackIndex] - self._actualZ[lookbackIndex],
             maxError)
         errRateX = (errX - oldErrX) / lookback
         errRateZ = (errZ - oldErrZ) / lookback

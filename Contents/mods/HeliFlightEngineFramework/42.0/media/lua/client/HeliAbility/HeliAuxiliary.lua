@@ -19,13 +19,13 @@ local _light = nil
 --- Above z=1: enable ghost mode (no zombie/ground collision).
 --- At/below z=1: disable ghost mode.
 --- @param playerObj IsoPlayer
---- @param curr_z number Current height in PZ Z-levels
-function HeliAuxiliary.updateGhostMode(playerObj, curr_z)
-    if curr_z > 1 then
+--- @param currentAltitude number Current height in PZ Z-levels
+function HeliAuxiliary.updateGhostMode(playerObj, currentAltitude)
+    if currentAltitude > 1 then
         if not playerObj:isGhostMode() then
             playerObj:setGhostMode(true)
         end
-        playerObj:setZ(curr_z)
+        playerObj:setZ(currentAltitude)
     else
         if playerObj:isGhostMode() then
             playerObj:setGhostMode(false)
@@ -38,16 +38,16 @@ end
 --- Creates/moves a light source at ground level below the helicopter.
 --- @param playerObj IsoPlayer
 --- @param vehicle BaseVehicle
---- @param nowMaxZ number Ground level Z (from HeliTerrainUtil.getNowMaxZ)
-function HeliAuxiliary.updateNightLight(playerObj, vehicle, nowMaxZ)
+--- @param groundLevelZ number Ground level Z (from HeliTerrainUtil.getNowMaxZ)
+function HeliAuxiliary.updateNightLight(playerObj, vehicle, groundLevelZ)
     local modData = vehicle:getModData()
     if not modData.NightLight then
         modData.NightLight = false
     end
     if modData.NightLight then
         -- Use integer floor Z for light placement — PZ lighting only illuminates
-        -- tiles on the same integer Z-level. nowMaxZ is fractional (e.g. 0.4).
-        local lightZ = math.floor(nowMaxZ)
+        -- tiles on the same integer Z-level. groundLevelZ is fractional (e.g. 0.4).
+        local lightZ = math.floor(groundLevelZ)
         local currentSquare = getCell():getGridSquare(playerObj:getX(), playerObj:getY(), lightZ)
         if _lastLightSquare ~= currentSquare then
             _lastLightSquare = currentSquare
@@ -66,22 +66,22 @@ function HeliAuxiliary.updateNightLight(playerObj, vehicle, nowMaxZ)
 end
 
 --- Consume fuel based on flight state.
---- Airborne (z>1): 0.03 * fpsMultiplier * gasMultiples per tick.
---- Grounded (z<=1): 0.01 * fpsMultiplier * gasMultiples per tick.
+--- Airborne (z>1): 0.03 * fpsMultiplier * gasConsumptionRate per tick.
+--- Grounded (z<=1): 0.01 * fpsMultiplier * gasConsumptionRate per tick.
 --- @param vehicle BaseVehicle
---- @param curr_z number Current height
+--- @param currentAltitude number Current height
 --- @param fpsMultiplier number Frame-rate compensation factor
 --- @param heliType string HeliList key (e.g. "UH1BHuey")
-function HeliAuxiliary.consumeGas(vehicle, curr_z, fpsMultiplier, heliType)
+function HeliAuxiliary.consumeGas(vehicle, currentAltitude, fpsMultiplier, heliType)
     local gasTankType = "GasTank"
-    local gasMultiples = HeliList[heliType].GasMultiples * (SandboxVars.WT and SandboxVars.WT.HeliGasMultiples or 1) * 0.1
+    local gasConsumptionRate = HeliList[heliType].GasMultiples * (SandboxVars.WT and SandboxVars.WT.HeliGasMultiples or 1) * 0.1
     local gasTank = vehicle:getPartById(gasTankType)
     if gasTank and gasTank:getInventoryItem() then
         local rate
-        if curr_z > 1 then
-            rate = 0.03 * fpsMultiplier * gasMultiples
+        if currentAltitude > 1 then
+            rate = 0.03 * fpsMultiplier * gasConsumptionRate
         else
-            rate = 0.01 * fpsMultiplier * gasMultiples
+            rate = 0.01 * fpsMultiplier * gasConsumptionRate
         end
         gasTank:setContainerContentAmount(math.max(gasTank:getContainerContentAmount() - rate, 0))
     end
@@ -96,10 +96,10 @@ function HeliAuxiliary.applyWallDamage(vehicle)
     if SandboxVars.WT and SandboxVars.WT.FloorHit then
         for i = 1, vehicle:getPartCount() do
             local part = vehicle:getPartByIndex(i - 1)
-            local condNow = part:getCondition()
+            local currentCondition = part:getCondition()
             if ZombRand(1, 100) <= 60 then
                 Panzer:sendVehicleCommandWrapper(getPlayer(), part, "setPartCondition", {
-                    condition = condNow - ZombRand(4, 10)
+                    condition = currentCondition - ZombRand(4, 10)
                 })
             end
         end

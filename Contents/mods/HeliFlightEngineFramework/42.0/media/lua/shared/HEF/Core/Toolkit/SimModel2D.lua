@@ -42,9 +42,9 @@ end
 --- @param dt number Time step (1/fps)
 --- @param inertia number Smoothing rate (0..1, higher = faster convergence)
 function SimModel2D:advance(desiredVelX, desiredVelZ, dt, inertia)
-    local alpha = 1 - (1 - inertia) ^ (dt * self.targetFps)
-    self.velX = self.velX + (desiredVelX - self.velX) * alpha
-    self.velZ = self.velZ + (desiredVelZ - self.velZ) * alpha
+    local blendFactor = 1 - (1 - inertia) ^ (dt * self.targetFps)
+    self.velX = self.velX + (desiredVelX - self.velX) * blendFactor
+    self.velZ = self.velZ + (desiredVelZ - self.velZ) * blendFactor
     self.posX = self.posX + self.velX * dt
     self.posZ = self.posZ + self.velZ * dt
 end

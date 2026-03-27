@@ -37,9 +37,9 @@ HEFContext = {}
 --- @field fpsMultiplier number TARGET_FPS / actualFPS (frame scaling)
 --- @field fps number Current average FPS (clamped to MIN_FPS floor)
 --- @field heliType string Helicopter type name (key into HeliList)
---- @field curr_z number Current altitude (z-levels)
---- @field nowMaxZ number Ground height under helicopter (z-levels)
---- @field tempVector2 Vector3f Reusable scratch vector (PZ API)
+--- @field currentAltitude number Current altitude (z-levels)
+--- @field groundLevelZ number Ground height under helicopter (z-levels)
+--- @field scratchVector Vector3f Reusable scratch vector (PZ API)
 --- @field posX number Vehicle horizontal position X (Lua number, PZ world)
 --- @field posZ number Vehicle horizontal position Z (Lua number, PZ world Y)
 --- @field velX number Smoothed horizontal velocity X (m/s)
@@ -82,9 +82,9 @@ HEFContext.CTX_FIELDS = {
     { name = "fpsMultiplier", type = _types.number,      desc = "TARGET_FPS / actualFPS (frame scaling)" },
     { name = "fps",           type = _types.number,      desc = "Current average FPS (clamped to MIN_FPS floor)" },
     { name = "heliType",      type = _types.string,      desc = "Helicopter type name (key into HeliList)" },
-    { name = "curr_z",        type = _types.number,      desc = "Current altitude (z-levels)" },
-    { name = "nowMaxZ",       type = _types.number,      desc = "Ground height under helicopter (z-levels)" },
-    { name = "tempVector2",   type = _types.Vector3f,    desc = "Reusable scratch vector (PZ API)" },
+    { name = "currentAltitude", type = _types.number,     desc = "Current altitude (z-levels)" },
+    { name = "groundLevelZ",  type = _types.number,      desc = "Ground height under helicopter (z-levels)" },
+    { name = "scratchVector", type = _types.Vector3f,    desc = "Reusable scratch vector (PZ API)" },
     { name = "posX",          type = _types.number,      desc = "Vehicle horizontal position X (PZ world)" },
     { name = "posZ",          type = _types.number,      desc = "Vehicle horizontal position Z (PZ world Y)" },
     { name = "velX",          type = _types.number,      desc = "Smoothed horizontal velocity X (m/s)" },
@@ -113,9 +113,9 @@ HEFContext.CTX_FIELDS = {
 --- Build the per-frame context table.
 --- @param vehicle BaseVehicle
 --- @param playerObj IsoPlayer
---- @param tempVector2 Vector3f Reusable scratch vector
+--- @param scratchVector Vector3f Reusable scratch vector
 --- @return HEFCtx
-function HEFContext.build(vehicle, playerObj, tempVector2)
+function HEFContext.build(vehicle, playerObj, scratchVector)
     local toLuaNum = HeliUtil.toLuaNum
 
     -- Invalidate per-frame terrain cache before any isBlocked calls
@@ -125,8 +125,8 @@ function HEFContext.build(vehicle, playerObj, tempVector2)
     local heliType = GetHeliType(vehicle)
     local fps = math.max(getAverageFPS(), HeliConfig.MIN_FPS)
     local fpsMultiplier = HeliConfig.TARGET_FPS / fps
-    local curr_z = toLuaNum(vehicle:getWorldPos(0, 0, 0, tempVector2):z())
-    local nowMaxZ = HeliTerrainUtil.getNowMaxZ(playerObj, curr_z)
+    local currentAltitude = toLuaNum(vehicle:getWorldPos(0, 0, 0, scratchVector):z())
+    local groundLevelZ = HeliTerrainUtil.getNowMaxZ(playerObj, currentAltitude)
 
     -- Vehicle state (read once, coerce once)
     local posX = toLuaNum(vehicle:getX())
@@ -158,10 +158,10 @@ function HEFContext.build(vehicle, playerObj, tempVector2)
 
     -- Wall blocking (uses per-frame cache)
     local blocked = {
-        up    = HeliTerrainUtil.isBlocked(playerObj, "UP", vehicle, tempVector2),
-        down  = HeliTerrainUtil.isBlocked(playerObj, "DOWN", vehicle, tempVector2),
-        left  = HeliTerrainUtil.isBlocked(playerObj, "LEFT", vehicle, tempVector2),
-        right = HeliTerrainUtil.isBlocked(playerObj, "RIGHT", vehicle, tempVector2),
+        up    = HeliTerrainUtil.isBlocked(playerObj, "UP", vehicle, scratchVector),
+        down  = HeliTerrainUtil.isBlocked(playerObj, "DOWN", vehicle, scratchVector),
+        left  = HeliTerrainUtil.isBlocked(playerObj, "LEFT", vehicle, scratchVector),
+        right = HeliTerrainUtil.isBlocked(playerObj, "RIGHT", vehicle, scratchVector),
     }
 
     -- Position-delta speed (already computed as side-effect of getVelocity above)
@@ -174,9 +174,9 @@ function HEFContext.build(vehicle, playerObj, tempVector2)
         fpsMultiplier = fpsMultiplier,
         fps = fps,
         heliType = heliType,
-        curr_z = curr_z,
-        nowMaxZ = nowMaxZ,
-        tempVector2 = tempVector2,
+        currentAltitude = currentAltitude,
+        groundLevelZ = groundLevelZ,
+        scratchVector = scratchVector,
         posX = posX,
         posZ = posZ,
         velX = toLuaNum(rawVelX),

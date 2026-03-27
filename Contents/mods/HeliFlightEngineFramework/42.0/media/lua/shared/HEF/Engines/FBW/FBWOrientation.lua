@@ -49,15 +49,15 @@ end
 --- @param angleY number Vehicle Euler Y (degrees)
 --- @param angleZ number Vehicle Euler Z (degrees)
 function FBWOrientation.initFromVehicle(angleX, angleY, angleZ)
-    local fullQ = Quaternion.fromEuler(
+    local fullQuaternion = Quaternion.fromEuler(
         math.rad(angleX), math.rad(angleY), math.rad(angleZ))
 
     -- Extract yaw via forward vector (physical nose direction on ground plane).
     -- DO NOT use angleY — PZ may report non-canonical Euler Y (e.g., 12°)
     -- while the quaternion's physical heading is 168°.
-    local fwd_x = 2 * (fullQ.x * fullQ.z + fullQ.w * fullQ.y)
-    local fwd_z = 1 - 2 * (fullQ.x * fullQ.x + fullQ.y * fullQ.y)
-    _yawDeg = math.deg(math.atan2(fwd_x, fwd_z))
+    local forwardX = 2 * (fullQuaternion.x * fullQuaternion.z + fullQuaternion.w * fullQuaternion.y)
+    local forwardZ = 1 - 2 * (fullQuaternion.x * fullQuaternion.x + fullQuaternion.y * fullQuaternion.y)
+    _yawDeg = math.deg(math.atan2(forwardX, forwardZ))
 
     -- Identity quaternion = perfectly level
     _tiltQuat = Quaternion.identity()
@@ -106,9 +106,9 @@ end
 --- Get forward direction from full composed orientation.
 --- @return number fwdPzX, number fwdPzY Forward direction in PZ world space
 function FBWOrientation.getForward()
-    local fullQ = composeOrientation()
-    local _, _, fwdX = fullQ:vectorX()
-    local _, _, fwdZ = fullQ:vectorZ()
+    local fullQuaternion = composeOrientation()
+    local _, _, fwdX = fullQuaternion:vectorX()
+    local _, _, fwdZ = fullQuaternion:vectorZ()
     return fwdX, fwdZ
 end
 

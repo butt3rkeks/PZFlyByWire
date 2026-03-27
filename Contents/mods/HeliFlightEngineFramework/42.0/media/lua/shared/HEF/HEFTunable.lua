@@ -3,7 +3,7 @@
 ]]
 
 --- @class HEFTunable
---- @field name string Short identifier (e.g. "pgain")
+--- @field name string Short identifier (e.g. "positionProportionalGain")
 --- @field label string Human-readable label (e.g. "P Gain")
 --- @field value number Current value
 --- @field min number Minimum allowed value

@@ -41,9 +41,9 @@ local _lastRawVelY = 0
 function HeliVelocityAdapter.getVelocity(vehicle)
     if not _tempVelVec then _tempVelVec = Vector3f.new() end
     local vel = vehicle:getLinearVelocity(_tempVelVec)
-    local rawVx = vel:x()
-    local rawVy = vel:y()
-    local rawVz = vel:z()
+    local rawVelocityX = vel:x()
+    local rawVelocityY = vel:y()
+    local rawVelocityZ = vel:z()
 
     local toLuaNum = HeliUtil.toLuaNum
 
@@ -55,36 +55,36 @@ function HeliVelocityAdapter.getVelocity(vehicle)
     if _prevPosX then
         local dx = posX - _prevPosX
         local dz = posZ - _prevPosZ
-        local posDeltaVelX = dx * _prevFPS
-        local posDeltaVelZ = dz * _prevFPS
+        local positionDeltaVelocityX = dx * _prevFPS
+        local positionDeltaVelocityZ = dz * _prevFPS
 
         -- Update position-delta speed (ground truth, used by snap guard)
         _posDeltaSpeed = math.sqrt(dx * dx + dz * dz) * fps
 
-        local bulletSpeedSq = toLuaNum(rawVx) * toLuaNum(rawVx) + toLuaNum(rawVz) * toLuaNum(rawVz)
-        local posSpeedSq = posDeltaVelX * posDeltaVelX + posDeltaVelZ * posDeltaVelZ
+        local bulletSpeedSq = toLuaNum(rawVelocityX) * toLuaNum(rawVelocityX) + toLuaNum(rawVelocityZ) * toLuaNum(rawVelocityZ)
+        local posSpeedSq = positionDeltaVelocityX * positionDeltaVelocityX + positionDeltaVelocityZ * positionDeltaVelocityZ
 
         -- If position says we're moving but Bullet says we're nearly stopped,
         -- the Bullet read is stale. Use position-based velocity.
         if posSpeedSq > 25 and bulletSpeedSq < posSpeedSq * 0.1 then
-            _smoothVelX = posDeltaVelX
-            _smoothVelZ = posDeltaVelZ
+            _smoothVelX = positionDeltaVelocityX
+            _smoothVelZ = positionDeltaVelocityZ
         else
-            _smoothVelX = toLuaNum(rawVx)
-            _smoothVelZ = toLuaNum(rawVz)
+            _smoothVelX = toLuaNum(rawVelocityX)
+            _smoothVelZ = toLuaNum(rawVelocityZ)
         end
     else
-        _smoothVelX = toLuaNum(rawVx)
-        _smoothVelZ = toLuaNum(rawVz)
+        _smoothVelX = toLuaNum(rawVelocityX)
+        _smoothVelZ = toLuaNum(rawVelocityZ)
         _posDeltaSpeed = 0
     end
 
     _prevPosX = posX
     _prevPosZ = posZ
     _prevFPS = fps
-    _lastRawVelY = rawVy
+    _lastRawVelY = rawVelocityY
 
-    return _smoothVelX, rawVy, _smoothVelZ
+    return _smoothVelX, rawVelocityY, _smoothVelZ
 end
 
 --- Get the last-computed velocity without mutating adapter state.

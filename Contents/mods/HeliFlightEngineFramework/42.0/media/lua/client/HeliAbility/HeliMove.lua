@@ -12,7 +12,7 @@
 -------------------------------------------------------------------------------------
 -- Globals (exported for HUD/UI systems in other mods)
 -------------------------------------------------------------------------------------
-local tempVector2 = Vector3f.new()
+local scratchVector = Vector3f.new()
 Heli_GlobalSpeed = 0
 Heli_GlobalHeading = 0
 
@@ -34,7 +34,7 @@ end
 -------------------------------------------------------------------------------------
 -- Wall damage rate limiter
 -------------------------------------------------------------------------------------
-local _wallDamageTick = HeliConfig.GetWalldmg()
+local _wallDamageTick = HeliConfig.GetWallDamageInterval()
 
 -------------------------------------------------------------------------------------
 -- Dual-path: OnTickEvenPaused applies corrections from position error.
@@ -90,9 +90,9 @@ local function helicopterMovementUpdate()
     -- Build per-frame context (keys, velocity, terrain, wall blocking)
     -- Runs after reset so HeliVelocityAdapter starts clean on first flight frame.
     --- @type HEFCtx
-    local ctx = HEFContext.build(vehicle, playerObj, tempVector2)
-    local curr_z = ctx.curr_z
-    local nowMaxZ = ctx.nowMaxZ
+    local ctx = HEFContext.build(vehicle, playerObj, scratchVector)
+    local currentAltitude = ctx.currentAltitude
+    local groundLevelZ = ctx.groundLevelZ
     local keys = ctx.keys
     local velX = ctx.velX
     local velY = ctx.velY
@@ -101,7 +101,7 @@ local function helicopterMovementUpdate()
     local heliType = ctx.heliType
 
     -- Ghost mode
-    HeliAuxiliary.updateGhostMode(playerObj, curr_z)
+    HeliAuxiliary.updateGhostMode(playerObj, currentAltitude)
 
     -- Warmup: re-anchor sim to actual position each frame until physics stabilizes.
     if _flightState == STATE_WARMUP then
@@ -118,32 +118,32 @@ local function helicopterMovementUpdate()
     if not vehicle:isEngineRunning() then
         _flightState = STATE_INACTIVE
         _dualPathActive = false
-        if curr_z > nowMaxZ then
-            local fallSpeed = HeliConfig.GetFall()
-            local Kp = HeliConfig.GetFallgain()
+        if currentAltitude > groundLevelZ then
+            local fallSpeed = HeliConfig.GetEngineOffFallSpeed()
+            local fallGain = HeliConfig.GetFallPdGain()
             if ctx.subSteps > 0 then
-                local fy = Kp * (-fallSpeed - velY) * ctx.mass * ctx.subSteps
-                if fy ~= 0 then
-                    HeliForceAdapter.applyForceImmediate(vehicle, 0, fy, 0)
+                local fallForceY = fallGain * (-fallSpeed - velY) * ctx.mass * ctx.subSteps
+                if fallForceY ~= 0 then
+                    HeliForceAdapter.applyForceImmediate(vehicle, 0, fallForceY, 0)
                 end
             end
             if HeliDebug.logEnabled then
-                HeliDebug.logEngineOff(curr_z, fallSpeed, velX, velY, velZ)
+                HeliDebug.logEngineOff(currentAltitude, fallSpeed, velX, velY, velZ)
             end
         end
         return
     end
 
     -- NightLight
-    HeliAuxiliary.updateNightLight(playerObj, vehicle, nowMaxZ)
+    HeliAuxiliary.updateNightLight(playerObj, vehicle, groundLevelZ)
 
     -- Gas consumption
-    HeliAuxiliary.consumeGas(vehicle, curr_z, fpsMultiplier, heliType)
+    HeliAuxiliary.consumeGas(vehicle, currentAltitude, fpsMultiplier, heliType)
 
     -- Airborne threshold: relative to actual ground surface
-    local isAirborne = (curr_z > nowMaxZ + HeliConfig.AIRBORNE_MARGIN)
+    local isAirborne = (currentAltitude > groundLevelZ + HeliConfig.AIRBORNE_MARGIN)
 
-    local r = nil
+    local flightResult = nil
 
     -- === AIRBORNE PATH ===
     if isAirborne then
@@ -151,29 +151,29 @@ local function helicopterMovementUpdate()
             _flightState = STATE_AIRBORNE
         end
 
-        r = HeliSimService.update(ctx)
+        flightResult = HeliSimService.update(ctx)
 
         -- Wall damage (rate-limited)
-        if r.isBlockedHit then
+        if flightResult.isBlockedHit then
             if _wallDamageTick > 0 then
                 _wallDamageTick = _wallDamageTick - 1
             else
-                _wallDamageTick = math.floor(HeliConfig.GetWalldmg() * getAverageFPS() / 60)
+                _wallDamageTick = math.floor(HeliConfig.GetWallDamageInterval() * getAverageFPS() / 60)
                 HeliAuxiliary.applyWallDamage(vehicle)
             end
         end
 
         -- Update global telemetry
-        Heli_GlobalSpeed = r.telemetrySpeed
+        Heli_GlobalSpeed = flightResult.telemetrySpeed
         Heli_GlobalHeading = vehicle:getAngleZ()
 
     -- === GROUND PATH ===
     else
         _flightState = STATE_INACTIVE
 
-        local gr = HeliSimService.updateGround(ctx)
+        local groundResult = HeliSimService.updateGround(ctx)
 
-        vehicle:setSpeedKmHour(gr.displaySpeed)
+        vehicle:setSpeedKmHour(groundResult.displaySpeed)
         _dualPathActive = false
         return
     end
@@ -181,15 +181,15 @@ local function helicopterMovementUpdate()
     -- === BELOW HERE: AIRBORNE ONLY ===
 
     -- Engine dead: shut off engine (gameplay side-effect, framework responsibility)
-    if r.engineDead and vehicle:isEngineRunning() then
+    if flightResult.engineDead and vehicle:isEngineRunning() then
         ISVehicleMenu.onShutOff(playerObj)
     end
 
     -- Dual-path activation (from engine results)
-    _dualPathActive = r.dualPathActive
+    _dualPathActive = flightResult.dualPathActive
 
     -- Display speed
-    vehicle:setSpeedKmHour(r.displaySpeed)
+    vehicle:setSpeedKmHour(flightResult.displaySpeed)
 
     -- === KEY STATE (shared by debug + recorder) ===
     local keyStr = nil
@@ -213,30 +213,30 @@ local function helicopterMovementUpdate()
 
         HeliDebug.captureState({
             state = _flightState,
-            curr_z = curr_z,
-            nowMaxZ = nowMaxZ,
-            desiredVelX = r.desiredVelX,
-            desiredVelZ = r.desiredVelZ,
-            simVelX = r.simVelX,
-            simVelZ = r.simVelZ,
-            posErrorX = r.errX,
-            posErrorZ = r.errZ,
-            posErrorRateX = r.errRateX,
-            posErrorRateZ = r.errRateZ,
+            currentAltitude = currentAltitude,
+            groundLevelZ = groundLevelZ,
+            desiredVelX = flightResult.desiredVelX,
+            desiredVelZ = flightResult.desiredVelZ,
+            simVelX = flightResult.simVelX,
+            simVelZ = flightResult.simVelZ,
+            posErrorX = flightResult.errX,
+            posErrorZ = flightResult.errZ,
+            posErrorRateX = flightResult.errRateX,
+            posErrorRateZ = flightResult.errRateZ,
             savedVelY = velY,
-            gravComp = r.gravComp,
-            engineDead = r.engineDead,
-            noHInput = r.noHInput,
-            freeMode = r.freeMode,
-            blocked = r.isBlockedHit,
+            gravComp = flightResult.gravComp,
+            engineDead = flightResult.engineDead,
+            noHInput = flightResult.noHInput,
+            freeMode = flightResult.freeMode,
+            blocked = flightResult.isBlockedHit,
             fps = fps,
             subSteps = subSteps,
             mass = vehicle:getMass(),
             keys = keyStr,
         })
 
-        HeliDebug.periodicLog(_flightState, curr_z, r.desiredVelX or 0, r.desiredVelZ or 0,
-            r.simVelX or 0, r.simVelZ or 0, r.errX or 0, r.errZ or 0, velY, keyStr)
+        HeliDebug.periodicLog(_flightState, currentAltitude, flightResult.desiredVelX or 0, flightResult.desiredVelZ or 0,
+            flightResult.simVelX or 0, flightResult.simVelZ or 0, flightResult.errX or 0, flightResult.errZ or 0, velY, keyStr)
 
         if HeliDebug.snapRequested then
             HeliDebug.snapRequested = false
@@ -248,34 +248,34 @@ local function helicopterMovementUpdate()
     -- it has stateful side effects that corrupt stale-read detection).
     if HeliDebug.isRecording() then
         local dbg = HeliSimService.getDebugState()
-        local recVel = vehicle:getLinearVelocity(Vector3f.new())
+        local recordingVelocity = vehicle:getLinearVelocity(Vector3f.new())
         HeliDebug.writeFlightFrame({
-            ms       = getTimestampMs(),
-            state    = _flightState,
-            fps      = getAverageFPS(),
-            aX       = HeliUtil.toLuaNum(vehicle:getX()),
-            aZ       = HeliUtil.toLuaNum(vehicle:getY()),
-            alt      = curr_z,
-            vX       = HeliUtil.toLuaNum(recVel:x()),
-            vY       = HeliUtil.toLuaNum(recVel:y()),
-            vZ       = HeliUtil.toLuaNum(recVel:z()),
-            sX       = dbg.simPosX or 0,
-            sZ       = dbg.simPosZ or 0,
-            svX      = dbg.simVelX or 0,
-            svZ      = dbg.simVelZ or 0,
-            eX       = dbg.errX or 0,
-            eZ       = dbg.errZ or 0,
-            dvX      = r.desiredVelX or 0,
-            dvZ      = r.desiredVelZ or 0,
-            dvY      = r.targetVelY or 0,
-            sub      = HeliForceAdapter.getLastSubSteps(),
-            tilt     = r.hasHInput,
-            faOff    = r.freeMode,
-            yawSim   = HeliSimService.getIntendedYaw() or 0,
-            yawAct   = HeliUtil.toLuaNum(vehicle:getAngleY()),
-            gravComp = r.gravComp,
-            dualPath = _dualPathActive,
-            keys     = keyStr or "-",
+            ms          = getTimestampMs(),
+            state       = _flightState,
+            fps         = getAverageFPS(),
+            actualX     = HeliUtil.toLuaNum(vehicle:getX()),
+            actualZ     = HeliUtil.toLuaNum(vehicle:getY()),
+            alt         = currentAltitude,
+            velocityX   = HeliUtil.toLuaNum(recordingVelocity:x()),
+            velocityY   = HeliUtil.toLuaNum(recordingVelocity:y()),
+            velocityZ   = HeliUtil.toLuaNum(recordingVelocity:z()),
+            simPosX     = dbg.simPosX or 0,
+            simPosZ     = dbg.simPosZ or 0,
+            simVelX     = dbg.simVelX or 0,
+            simVelZ     = dbg.simVelZ or 0,
+            errorX      = dbg.errX or 0,
+            errorZ      = dbg.errZ or 0,
+            desiredVelX = flightResult.desiredVelX or 0,
+            desiredVelZ = flightResult.desiredVelZ or 0,
+            desiredVelY = flightResult.targetVelY or 0,
+            subSteps    = HeliForceAdapter.getLastSubSteps(),
+            tilt        = flightResult.hasHInput,
+            flightAssistOff = flightResult.freeMode,
+            yawSimulated = HeliSimService.getIntendedYaw() or 0,
+            yawActual   = HeliUtil.toLuaNum(vehicle:getAngleY()),
+            gravComp    = flightResult.gravComp,
+            dualPath    = _dualPathActive,
+            keys        = keyStr or "-",
         })
     end
 

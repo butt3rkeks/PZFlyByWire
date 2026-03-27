@@ -33,13 +33,13 @@ local _lastSubSteps = 0
 --- @param bulletFy number Force Y (Bullet space, height)
 --- @param bulletFz number Force Z (Bullet space)
 function HeliForceAdapter.applyForceImmediate(vehicle, bulletFx, bulletFy, bulletFz)
-    local mag = HeliUtil.toLuaNum(math.sqrt(bulletFx * bulletFx + bulletFy * bulletFy + bulletFz * bulletFz))
-    if mag < MIN_FORCE_MAG then return end
+    local forceMagnitude = HeliUtil.toLuaNum(math.sqrt(bulletFx * bulletFx + bulletFy * bulletFy + bulletFz * bulletFz))
+    if forceMagnitude < MIN_FORCE_MAG then return end
 
-    local strength = mag / IMPULSE_GENERIC_MULTIPLIER
-    local dirX = bulletFx / mag
-    local dirY = bulletFy / mag
-    local dirZ = bulletFz / mag
+    local strength = forceMagnitude / IMPULSE_GENERIC_MULTIPLIER
+    local dirX = bulletFx / forceMagnitude
+    local dirY = bulletFy / forceMagnitude
+    local dirZ = bulletFz / forceMagnitude
 
     -- applyImpulseGeneric swaps Y/Z internally: set(dirX, dirZ, dirY)
     vehicle:applyImpulseGeneric(
@@ -53,18 +53,18 @@ end
 --- @return number subSteps Integer sub-steps this frame
 --- @return number physicsDelta Actual physics time (seconds)
 function HeliForceAdapter.getSubStepsThisFrame()
-    local gt = getGameTime and getGameTime()
-    if gt and gt.getPhysicsSecondsSinceLastUpdate then
-        local physDelta = HeliUtil.toLuaNum(gt:getPhysicsSecondsSinceLastUpdate())
-        _physicsLocalTime = _physicsLocalTime + physDelta
+    local gameTime = getGameTime and getGameTime()
+    if gameTime and gameTime.getPhysicsSecondsSinceLastUpdate then
+        local physicsDelta = HeliUtil.toLuaNum(gameTime:getPhysicsSecondsSinceLastUpdate())
+        _physicsLocalTime = _physicsLocalTime + physicsDelta
         if _physicsLocalTime >= PHYSICS_SUBSTEP then
             local numSteps = math.floor(_physicsLocalTime / PHYSICS_SUBSTEP)
             _physicsLocalTime = _physicsLocalTime - numSteps * PHYSICS_SUBSTEP
             _lastSubSteps = numSteps
-            return numSteps, physDelta
+            return numSteps, physicsDelta
         end
         _lastSubSteps = 0
-        return 0, physDelta
+        return 0, physicsDelta
     end
     local fps = math.max(getAverageFPS(), HeliConfig.MIN_FPS)
     local estimatedDelta = 1.0 / fps
