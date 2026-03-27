@@ -43,7 +43,7 @@ function FBWEngine.resetFlightState()
     _hasTiltInput = false
     _hasHorizontalInput = false
     _flightAssistOff = false
-    _warmupCounter = HeliConfig.WARMUP_FRAMES
+    _warmupCounter = HeliConfig.get("warmup")
     _simInitialized = false
     _prevPosX = nil
     _prevPosZ = nil

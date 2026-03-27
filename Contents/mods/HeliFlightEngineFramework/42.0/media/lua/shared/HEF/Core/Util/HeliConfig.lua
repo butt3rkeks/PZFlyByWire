@@ -19,17 +19,24 @@ HeliConfig = {}
 -- Runtime-only params (pgain, dgain, etc.) don't appear in sandbox-options.txt.
 -------------------------------------------------------------------------------------
 local PARAMS = {
-    -- Sandbox-tunable (persisted per-save) — min/max match sandbox-options.txt
-    gravity     = { field = "GravityEstimate",     default = 9.8,   min = 5.0,   max = 20.0,   desc = "Gravity (Bullet units/s^2)" },
-    kp          = { field = "ResponsivenessGain",  default = 8.0,   min = 1.0,   max = 20.0,   desc = "Vertical PD gain (responsiveness)" },
-    brake       = { field = "BrakingMultiplier",   default = 0.05,  min = 0.01,  max = 1.0,    desc = "Base inertia rate (0.05=1s, 0.10=0.5s)" },
-    accel       = { field = "AccelMultiplier",     default = 1.5,   min = 0.1,   max = 10.0,   desc = "Acceleration inertia multiplier on brake" },
-    decel       = { field = "DecelMultiplier",     default = 2.25,  min = 0.1,   max = 10.0,   desc = "Deceleration inertia multiplier on brake" },
-    ascend      = { field = "AscendSpeed",         default = 8.0,   min = 1.0,   max = 30.0,   desc = "Ascend speed (Bullet Y/s)" },
-    descend     = { field = "DescendSpeed",        default = 14.0,  min = 1.0,   max = 25.0,   desc = "Descend speed (Bullet Y/s)" },
-    fall        = { field = "GravityFallSpeed",    default = 24.5,  min = 2.0,   max = 50.0,   desc = "Engine-off fall (Bullet Y/s)" },
-    deadfall    = { field = "EngineDeadFallSpeed",  default = 35.0,  min = 3.0,   max = 60.0,   desc = "Engine-dead fall (Bullet Y/s)" },
-    hspeed      = { field = "MaxHorizontalSpeed",  default = 90.0,  min = 10.0,  max = 1000.0, desc = "Max horizontal speed (m/s)" },
+    -- Framework sandbox-tunable (HEF.* namespace, persisted per-save)
+    maxalt      = { ns = "HEF", field = "MaxAltitude",         default = 8,    min = 1,    max = 50,     desc = "Max flight ceiling (Z-levels)" },
+    warmup      = { ns = "HEF", field = "WarmupFrames",        default = 10,   min = 1,    max = 120,    desc = "Startup delay (frames before flight)" },
+    enginedead  = { ns = "HEF", field = "EngineDeadCondition", default = 10,   min = 0,    max = 100,    desc = "Engine condition % for engine-dead" },
+    walldmg     = { ns = "HEF", field = "WallDamageInterval",  default = 60,   min = 10,   max = 600,    desc = "Ticks between wall collision damage" },
+
+    -- FBW engine sandbox-tunable (FBW.* namespace, persisted per-save)
+    gravity     = { ns = "FBW", field = "GravityEstimate",     default = 9.8,   min = 5.0,   max = 20.0,   desc = "Gravity (Bullet units/s^2)" },
+    kp          = { ns = "FBW", field = "ResponsivenessGain",  default = 8.0,   min = 1.0,   max = 20.0,   desc = "Vertical PD gain (responsiveness)" },
+    brake       = { ns = "FBW", field = "BrakingMultiplier",   default = 0.05,  min = 0.01,  max = 1.0,    desc = "Base inertia rate (0.05=1s, 0.10=0.5s)" },
+    accel       = { ns = "FBW", field = "AccelMultiplier",     default = 1.5,   min = 0.1,   max = 10.0,   desc = "Acceleration inertia multiplier on brake" },
+    decel       = { ns = "FBW", field = "DecelMultiplier",     default = 2.25,  min = 0.1,   max = 10.0,   desc = "Deceleration inertia multiplier on brake" },
+    ascend      = { ns = "FBW", field = "AscendSpeed",         default = 8.0,   min = 1.0,   max = 30.0,   desc = "Ascend speed (Bullet Y/s)" },
+    descend     = { ns = "FBW", field = "DescendSpeed",        default = 14.0,  min = 1.0,   max = 25.0,   desc = "Descend speed (Bullet Y/s)" },
+    fall        = { ns = "FBW", field = "GravityFallSpeed",    default = 24.5,  min = 2.0,   max = 50.0,   desc = "Engine-off fall (Bullet Y/s)" },
+    deadfall    = { ns = "FBW", field = "EngineDeadFallSpeed",  default = 35.0,  min = 3.0,   max = 60.0,   desc = "Engine-dead fall (Bullet Y/s)" },
+    hspeed      = { ns = "FBW", field = "MaxHorizontalSpeed",  default = 90.0,  min = 10.0,  max = 1000.0, desc = "Max horizontal speed (m/s)" },
+    yawspeed    = { ns = "FBW", field = "YawSpeed",            default = 0.7,   min = 0.1,   max = 5.0,    desc = "Yaw rotation speed (deg/frame at target FPS)" },
 
     -- Runtime-only (session overrides, from /hef commands)
     pgain       = { default = 7.0,   min = 0.1,  max = 50.0, desc = "Horizontal position error P gain" },
@@ -42,8 +49,9 @@ local PARAMS = {
 
 -- Ordered list for consistent display in /hef show
 local PARAM_ORDER = {
+    "maxalt", "warmup", "enginedead", "walldmg",
     "gravity", "kp", "brake", "accel", "decel",
-    "ascend", "descend", "fall", "deadfall", "hspeed",
+    "ascend", "descend", "fall", "deadfall", "hspeed", "yawspeed",
     "pgain", "dgain", "maxerr", "fstopgain", "yawgain", "autolevel",
 }
 
@@ -62,11 +70,14 @@ function HeliConfig.get(shorthand)
     if _overrides[shorthand] ~= nil then
         return _overrides[shorthand]
     end
-    -- SandboxVars (persisted per-save) — only for params with a field mapping
+    -- SandboxVars (persisted per-save) — only for params with namespace + field
     local p = PARAMS[shorthand]
-    if p and p.field and SandboxVars.FBW then
-        local val = SandboxVars.FBW[p.field]
-        if val ~= nil then return val end
+    if p and p.ns and p.field then
+        local nsTable = SandboxVars[p.ns]
+        if nsTable then
+            local val = nsTable[p.field]
+            if val ~= nil then return val end
+        end
     end
     -- Hardcoded default
     return p and p.default or 0
@@ -142,29 +153,17 @@ HeliConfig.AIRBORNE_MARGIN = 0.6
 HeliConfig.LANDING_ZONE_HEIGHT = 1.0
 HeliConfig.LANDING_MIN_SPEED_FACTOR = 0.3
 
--- Wall damage rate: ticks between wall damage applications (~1 second at 60 FPS).
-HeliConfig.WALL_DAMAGE_INTERVAL = 60
-
 -- Ground velocity zeroing force multiplier.
 HeliConfig.GROUND_VELOCITY_KILL = 100
 
 -- Ground velocity threshold: below this magnitude, no zeroing force needed.
 HeliConfig.GROUND_VELOCITY_THRESHOLD = 0.01
 
--- Maximum flight ceiling (Z-levels). Ascend speed tapers near the ceiling.
-HeliConfig.MAX_ALTITUDE = 8
-
 -- Ceiling zone: ascend speed tapers in the last N Z-levels below MAX_ALTITUDE.
 HeliConfig.CEILING_ZONE_HEIGHT = 1.0
 
--- Engine dead threshold: engine condition below this triggers engine-dead fall.
-HeliConfig.ENGINE_DEAD_CONDITION = 10
-
 -- Minimum altitude for descent/fuel-off checks. Below this, S-key and no-fuel don't apply.
 HeliConfig.MIN_DESCENT_ALTITUDE = 0.4
-
--- Yaw rotation speed (degrees per frame at target FPS).
-HeliConfig.YAW_SPEED = 0.7
 
 -- Yaw re-anchor threshold: if yaw error exceeds this, re-anchor to actual (degrees).
 HeliConfig.YAW_REANCHOR_THRESHOLD = 10.0
@@ -218,9 +217,6 @@ HeliConfig.MIN_FPS = 10
 -- CarController override: set vehicle max speed high enough that CarController
 -- never fights our forces.
 HeliConfig.MAX_SPEED_OVERRIDE = 999
-
--- Warmup frames: after reset, skip correction forces for N frames.
-HeliConfig.WARMUP_FRAMES = 10
 
 -- History buffer size for PD error rate computation.
 HeliConfig.HISTORY_SIZE = 30

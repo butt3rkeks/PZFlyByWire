@@ -34,7 +34,7 @@ end
 -------------------------------------------------------------------------------------
 -- Wall damage rate limiter
 -------------------------------------------------------------------------------------
-local _wallDamageTick = HeliConfig.WALL_DAMAGE_INTERVAL
+local _wallDamageTick = HeliConfig.get("walldmg")
 
 -------------------------------------------------------------------------------------
 -- Dual-path: OnTickEvenPaused applies corrections from position error.
@@ -158,7 +158,7 @@ local function helicopterMovementUpdate()
             if _wallDamageTick > 0 then
                 _wallDamageTick = _wallDamageTick - 1
             else
-                _wallDamageTick = math.floor(HeliConfig.WALL_DAMAGE_INTERVAL * getAverageFPS() / 60)
+                _wallDamageTick = math.floor(HeliConfig.get("walldmg") * getAverageFPS() / 60)
                 HeliAuxiliary.applyWallDamage(vehicle)
             end
         end

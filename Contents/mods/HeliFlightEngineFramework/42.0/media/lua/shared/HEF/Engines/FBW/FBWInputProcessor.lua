@@ -44,11 +44,11 @@ function FBWInputProcessor.computeRotationDeltas(keys, fpsMultiplier, heliType, 
 
     -- Yaw (A/D keys)
     if keys.a then
-        ay = HeliConfig.YAW_SPEED * fpsMultiplier
+        ay = HeliConfig.get("yawspeed") * fpsMultiplier
         isRotating = true
     end
     if keys.d then
-        ay = -HeliConfig.YAW_SPEED * fpsMultiplier
+        ay = -HeliConfig.get("yawspeed") * fpsMultiplier
         isRotating = true
     end
 

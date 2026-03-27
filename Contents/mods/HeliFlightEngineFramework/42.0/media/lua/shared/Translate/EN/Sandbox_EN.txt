@@ -1,6 +1,10 @@
 Sandbox_EN = {
     Sandbox_HEF = "Flight Engine Framework",
     Sandbox_HEF_FlightEngine = "Active flight engine name (e.g. FBW). Must match a registered engine.",
+    Sandbox_HEF_MaxAltitude = "Maximum flight ceiling in Z-levels.",
+    Sandbox_HEF_WarmupFrames = "Startup delay in frames before flight responds after entering helicopter.",
+    Sandbox_HEF_EngineDeadCondition = "Engine condition percentage below which the engine is considered destroyed.",
+    Sandbox_HEF_WallDamageInterval = "Ticks between wall collision damage applications.",
     Sandbox_FBW = "FBW Flight Engine",
     Sandbox_FBW_GravityEstimate = "Gravity estimate (Bullet units/s^2). Calibrate by observing free-fall rate.",
     Sandbox_FBW_AscendSpeed = "Ascend speed when pressing W (Bullet Y units/s).",
@@ -12,4 +16,5 @@ Sandbox_EN = {
     Sandbox_FBW_BrakingMultiplier = "Base inertia rate (lower = slower acceleration).",
     Sandbox_FBW_AccelMultiplier = "Acceleration multiplier on braking rate. Higher = faster speed-up.",
     Sandbox_FBW_DecelMultiplier = "Deceleration multiplier on braking rate. Higher = faster slow-down.",
+    Sandbox_FBW_YawSpeed = "Yaw rotation speed in degrees per frame. Higher = faster turning.",
 }

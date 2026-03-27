@@ -17,9 +17,9 @@ local function getVerticalCfg()
         descendSpeed       = HeliConfig.get("descend"),
         gravityFallSpeed   = HeliConfig.get("fall"),
         engineDeadFallSpeed = HeliConfig.get("deadfall"),
-        engineDeadCondition = HeliConfig.ENGINE_DEAD_CONDITION,
+        engineDeadCondition = HeliConfig.get("enginedead"),
         minDescentAltitude = HeliConfig.MIN_DESCENT_ALTITUDE,
-        maxAltitude        = HeliConfig.MAX_ALTITUDE,
+        maxAltitude        = HeliConfig.get("maxalt"),
         ceilingZoneHeight  = HeliConfig.CEILING_ZONE_HEIGHT,
     }
 end

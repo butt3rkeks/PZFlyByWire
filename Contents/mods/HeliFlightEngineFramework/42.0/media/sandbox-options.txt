@@ -7,6 +7,34 @@ option HEF.FlightEngine
     translation = HEF_FlightEngine,
 }
 
+option HEF.MaxAltitude
+{
+    type = integer, min = 1, max = 50, default = 8,
+    page = HEF,
+    translation = HEF_MaxAltitude,
+}
+
+option HEF.WarmupFrames
+{
+    type = integer, min = 1, max = 120, default = 10,
+    page = HEF,
+    translation = HEF_WarmupFrames,
+}
+
+option HEF.EngineDeadCondition
+{
+    type = integer, min = 0, max = 100, default = 10,
+    page = HEF,
+    translation = HEF_EngineDeadCondition,
+}
+
+option HEF.WallDamageInterval
+{
+    type = integer, min = 10, max = 600, default = 60,
+    page = HEF,
+    translation = HEF_WallDamageInterval,
+}
+
 option FBW.GravityEstimate
 {
     type = double, min = 5.0, max = 20.0, default = 9.8,
@@ -75,4 +103,11 @@ option FBW.DecelMultiplier
     type = double, min = 0.1, max = 10.0, default = 2.25,
     page = FBW,
     translation = FBW_DecelMultiplier,
+}
+
+option FBW.YawSpeed
+{
+    type = double, min = 0.1, max = 5.0, default = 0.7,
+    page = FBW,
+    translation = FBW_YawSpeed,
 }
