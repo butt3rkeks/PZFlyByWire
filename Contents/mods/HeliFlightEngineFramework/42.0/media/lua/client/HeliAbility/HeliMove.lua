@@ -120,7 +120,7 @@ local function helicopterMovementUpdate()
         _dualPathActive = false
         if curr_z > nowMaxZ then
             local fallSpeed = HeliConfig.get("fall")
-            local Kp = HeliConfig.get("kp")
+            local Kp = HeliConfig.get("fallgain")
             if ctx.subSteps > 0 then
                 local fy = Kp * (-fallSpeed - velY) * ctx.mass * ctx.subSteps
                 if fy ~= 0 then
