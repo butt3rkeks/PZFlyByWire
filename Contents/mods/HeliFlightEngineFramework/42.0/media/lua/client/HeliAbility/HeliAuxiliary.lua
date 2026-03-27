@@ -83,7 +83,7 @@ function HeliAuxiliary.consumeGas(vehicle, curr_z, fpsMultiplier, heliType)
         else
             rate = 0.01 * fpsMultiplier * gasMultiples
         end
-        gasTank:setContainerContentAmount(gasTank:getContainerContentAmount() - rate)
+        gasTank:setContainerContentAmount(math.max(gasTank:getContainerContentAmount() - rate, 0))
     end
 end
 
