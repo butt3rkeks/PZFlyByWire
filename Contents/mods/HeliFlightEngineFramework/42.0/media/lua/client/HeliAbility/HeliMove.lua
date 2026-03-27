@@ -164,7 +164,7 @@ local function helicopterMovementUpdate()
         end
 
         -- Update global telemetry
-        Heli_GlobalSpeed = r.telemetrySpeed * fpsMultiplier * HeliConfig.TELEMETRY_SPEED_FACTOR
+        Heli_GlobalSpeed = r.telemetrySpeed
         Heli_GlobalHeading = vehicle:getAngleZ()
 
     -- === GROUND PATH ===

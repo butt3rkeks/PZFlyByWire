@@ -102,18 +102,17 @@ end
 -- Engine selection
 -------------------------------------------------------------------------------------
 
---- Engine name mapping: sandbox enum index → engine name string.
---- PZ sandbox enums are 1-indexed integers.
-local ENGINE_MAP = { "FBW" }
-
 --- Get the active flight engine name from sandbox settings.
+--- String field — defaults to "FBW". Third-party mods can set any registered engine name.
 --- @return string Engine name (e.g. "FBW")
 function HeliConfig.getEngineName()
-    local idx = 1
     if SandboxVars.HEF and SandboxVars.HEF.FlightEngine then
-        idx = SandboxVars.HEF.FlightEngine
+        local name = SandboxVars.HEF.FlightEngine
+        if type(name) == "string" and name ~= "" then
+            return name
+        end
     end
-    return ENGINE_MAP[idx] or ENGINE_MAP[1]
+    return "FBW"
 end
 
 -------------------------------------------------------------------------------------
@@ -215,9 +214,6 @@ HeliConfig.TARGET_FPS = 90
 
 -- Minimum FPS floor: prevents extreme fpsMultiplier values during GC pauses.
 HeliConfig.MIN_FPS = 10
-
--- Telemetry speed multiplier (converts rotation deltas to display speed).
-HeliConfig.TELEMETRY_SPEED_FACTOR = 600
 
 -- CarController override: set vehicle max speed high enough that CarController
 -- never fights our forces.

@@ -2,7 +2,7 @@ VERSION = 1,
 
 option HEF.FlightEngine
 {
-    type = enum, numValues = 1, default = 1,
+    type = string, default = FBW,
     page = HEF,
     translation = HEF_FlightEngine,
 }

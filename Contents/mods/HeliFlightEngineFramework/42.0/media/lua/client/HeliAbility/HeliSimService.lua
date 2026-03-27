@@ -14,7 +14,11 @@ function HeliSimService._resolveEngine()
     local name = HeliConfig.getEngineName()
     _activeEngine = IFlightEngine.get(name)
     if not _activeEngine then
-        error("HeliSimService: unknown flight engine '" .. tostring(name) .. "'")
+        print("HEF WARNING: flight engine '" .. tostring(name) .. "' not registered. Falling back to FBW.")
+        _activeEngine = IFlightEngine.get("FBW")
+    end
+    if not _activeEngine then
+        error("HeliSimService: no flight engine available (requested '" .. tostring(name) .. "')")
     end
 end
 

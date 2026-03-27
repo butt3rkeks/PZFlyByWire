@@ -270,7 +270,7 @@ function FBWEngine.update(ctx)
         displaySpeed = displaySpeed,
         -- Framework-consumed (wall damage, telemetry)
         isBlockedHit = isBlockedHit,
-        telemetrySpeed = ax + ay + az,
+        telemetrySpeed = displaySpeed,
         -- Debug / flight data recorder
         angleZ = angleZ, angleX = angleX,
         fwdX = fwdX, fwdZ = fwdZ,

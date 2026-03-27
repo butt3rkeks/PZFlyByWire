@@ -14,7 +14,7 @@
 --- @field displaySpeed number km/h for speedometer (vehicle:setSpeedKmHour)
 --- --- Framework-consumed (wall damage, telemetry) ---
 --- @field isBlockedHit boolean Wall collision occurred this frame (triggers wall damage)
---- @field telemetrySpeed number Raw rotation-delta sum for Heli_GlobalSpeed telemetry
+--- @field telemetrySpeed number Ground speed (km/h) for Heli_GlobalSpeed export
 --- --- Debug / flight data recorder (nil-safe, consumed only when logging active) ---
 --- @field desiredVelX number|nil Desired horizontal velocity X from tilt
 --- @field desiredVelZ number|nil Desired horizontal velocity Z from tilt

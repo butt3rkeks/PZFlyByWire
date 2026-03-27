@@ -106,7 +106,7 @@ option YourEngine.SomeSetting
 }
 ```
 6. Add translation strings to `Translate/EN/Sandbox_EN.txt`
-7. Add the engine to the selector enum in `sandbox-options.txt` (`numValues = 2`) and map it in `HeliConfig.getEngineName()`
+7. Set `HEF.FlightEngine` sandbox string to your engine name (default is `"FBW"`). For a standalone third-party mod, users set this in sandbox settings or `SandboxVars.lua`
 
 ### What the Framework Provides
 

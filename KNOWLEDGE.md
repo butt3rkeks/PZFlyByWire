@@ -8,7 +8,7 @@ Pluggable flight engine framework for helicopter mods. Ships with the FBW (fly-b
 - `IFlightEngine` defines the interface + registry. Engines register at load time.
 - `HeliSimService` is a thin dispatcher: resolves engine from sandbox setting, delegates all calls.
 - `HeliMove` builds a `ctx` table per frame, passes to engine via HeliSimService. Reads results.
-- Sandbox setting `HEF.FlightEngine` (enum) selects the active engine. HeliConfig maps index → name.
+- Sandbox setting `HEF.FlightEngine` (string, default `"FBW"`) selects the active engine. Third-party mods can set any registered name.
 - Each engine owns its own sandbox namespace (e.g., `SandboxVars.FBW.*`).
 - Chat command `/hef` auto-discovers tunables and commands from the active engine.
 
@@ -617,7 +617,7 @@ Data flows through typed contracts: HEFCtx down, HEFUpdateResult up.
 **Strategy Pattern** — `IFlightEngine` defines the contract (required + optional methods).
 Engines register at load time. `HeliSimService` dispatches to the active engine. `HeliMove`
 never sees the engine directly. Adding a new engine: create `Engines/NewEngine/`, implement
-interface, register, add sandbox enum option.
+interface, register, set `HEF.FlightEngine` sandbox string to engine name.
 
 **Typed Data Contracts** — Framework↔engine communication uses typed classes with EmmyLua
 annotations. `HEFContext.build()` constructs `HEFCtx` (framework→engine). Engines return
@@ -656,7 +656,7 @@ Ground and engine-off paths set `_flightState = inactive` (triggers re-init next
 | New correction-phase field | HEFCorrectionCtx.lua (same pattern) | HEF/ |
 | New result field | HEFUpdateResult.lua or HEFGroundResult.lua | HEF/ |
 | New sandbox parameter | HeliConfig + sandbox-options.txt | Util/ |
-| Add new flight engine | New Engines/X/ folder, implement IFlightEngine, add sandbox enum | Engines/ |
+| Add new flight engine | New Engines/X/ folder, implement IFlightEngine, set sandbox string | Engines/ |
 | FBW PD controller tuning | FBWEngine tunables (auto-discovered by /hef) | Engines/FBW/ |
 | FBW rotation feel / key mappings | FBWInputProcessor only | Engines/FBW/ |
 | FBW quaternion math | FBWOrientation (uses Models/Quaternion) | Engines/FBW/ |
@@ -715,7 +715,7 @@ Ground and engine-off paths set `_flightState = inactive` (triggers re-init next
 - Ground liftoff/landing (updateGround path)
 - Engine-off fall (framework-level PD, no engine involvement)
 - `/hef show`, `/hef pgain 5`, `/hef reset` through dispatcher chain
-- Sandbox UI: FlightEngine dropdown with "FBW" option
+- Sandbox UI: FlightEngine string field (type engine name, default "FBW")
 - Braking / error-based PD transition / soft anchor
 - FA-off (flight assist off) coast mode
 - Flight data CSV recording (`/hef record`)
@@ -737,7 +737,7 @@ Each engine owns its sandbox namespace. EmmyLua annotations on all engine-facing
 Plan: nifty-munching-pearl (Claude Code session)
 
 Benefits:
-- Swap entire flight engine via sandbox setting (`HEF.FlightEngine` enum)
+- Swap entire flight engine via sandbox setting (`HEF.FlightEngine` string)
 - New engines are self-contained folders, no framework edits needed
 - Shared Models (Quaternion, RotationMatrix) reusable across engines
 - Auto-discovery of tunables and commands via interface

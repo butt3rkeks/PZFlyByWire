@@ -1,7 +1,6 @@
 Sandbox_EN = {
     Sandbox_HEF = "Flight Engine Framework",
-    Sandbox_HEF_FlightEngine = "Active flight engine. Determines flight physics model.",
-    Sandbox_HEF_FlightEngine_option1 = "FBW (Fly-By-Wire)",
+    Sandbox_HEF_FlightEngine = "Active flight engine name (e.g. FBW). Must match a registered engine.",
     Sandbox_FBW = "FBW Flight Engine",
     Sandbox_FBW_GravityEstimate = "Gravity estimate (Bullet units/s^2). Default 9.8. Calibrate by observing free-fall rate.",
     Sandbox_FBW_AscendSpeed = "Ascend speed when pressing W (Bullet Y units/s). Default 8.0.",
