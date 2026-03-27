@@ -34,7 +34,7 @@ end
 -------------------------------------------------------------------------------------
 -- Wall damage rate limiter
 -------------------------------------------------------------------------------------
-local _wallDamageTick = HeliConfig.get("walldmg")
+local _wallDamageTick = HeliConfig.GetWalldmg()
 
 -------------------------------------------------------------------------------------
 -- Dual-path: OnTickEvenPaused applies corrections from position error.
@@ -119,8 +119,8 @@ local function helicopterMovementUpdate()
         _flightState = STATE_INACTIVE
         _dualPathActive = false
         if curr_z > nowMaxZ then
-            local fallSpeed = HeliConfig.get("fall")
-            local Kp = HeliConfig.get("fallgain")
+            local fallSpeed = HeliConfig.GetFall()
+            local Kp = HeliConfig.GetFallgain()
             if ctx.subSteps > 0 then
                 local fy = Kp * (-fallSpeed - velY) * ctx.mass * ctx.subSteps
                 if fy ~= 0 then
@@ -158,7 +158,7 @@ local function helicopterMovementUpdate()
             if _wallDamageTick > 0 then
                 _wallDamageTick = _wallDamageTick - 1
             else
-                _wallDamageTick = math.floor(HeliConfig.get("walldmg") * getAverageFPS() / 60)
+                _wallDamageTick = math.floor(HeliConfig.GetWalldmg() * getAverageFPS() / 60)
                 HeliAuxiliary.applyWallDamage(vehicle)
             end
         end

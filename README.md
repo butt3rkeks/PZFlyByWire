@@ -81,8 +81,9 @@ Want to create a custom flight engine? See `KNOWLEDGE.md` for the full technical
 
 ### Quick Start
 
-1. Create `shared/HEF/Engines/YourEngine/YourEngine.lua`
-2. Implement all methods listed in `IFlightEngine.REQUIRED_METHODS`:
+1. Create `shared/HEF/Engines/YourEngine/YourEngineHeliConfig.lua` — register params + define getters
+2. Create `shared/HEF/Engines/YourEngine/YourEngine.lua` — implement the flight engine
+3. Implement all methods listed in `IFlightEngine.REQUIRED_METHODS`:
 
 | Category | Methods |
 |----------|---------|
@@ -94,9 +95,9 @@ Want to create a custom flight engine? See `KNOWLEDGE.md` for the full technical
 | Commands | `getCommands()`, `executeCommand(name, args)` |
 | Metadata | `getInfo()` |
 
-3. Optionally implement `applyCorrectionForces(cctx)` (see `IFlightEngine.OPTIONAL_METHODS`)
-4. Register: `IFlightEngine.register("YourEngine", YourEngineTable)`
-5. Add your sandbox options to `sandbox-options.txt` under your own namespace:
+4. Optionally implement `applyCorrectionForces(cctx)` (see `IFlightEngine.OPTIONAL_METHODS`)
+5. Register: `IFlightEngine.register("YourEngine", YourEngineTable)`
+6. Add your sandbox options to `sandbox-options.txt` under your own namespace:
 ```
 option YourEngine.SomeSetting
 {
@@ -105,8 +106,8 @@ option YourEngine.SomeSetting
     translation = YourEngine_SomeSetting,
 }
 ```
-6. Add translation strings to `Translate/EN/Sandbox_EN.txt`
-7. Set `HEF.FlightEngine` sandbox string to your engine name (default is `"FBW"`). For a standalone third-party mod, users set this in sandbox settings or `SandboxVars.lua`
+7. Add translation strings to `Translate/EN/Sandbox_EN.txt`
+8. Set `HEF.FlightEngine` sandbox string to your engine name (default is `"FBW"`). For a standalone third-party mod, users set this in sandbox settings or `SandboxVars.lua`
 
 ### What the Framework Provides
 
@@ -114,7 +115,7 @@ Every frame, your engine receives a typed `HEFCtx` table (see `HEFContext.lua`):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| vehicle | BaseVehicle | The helicopter |
+| vehicle | BaseVehicle | The helicopter (escape hatch for engine-specific state) |
 | playerObj | IsoPlayer | The pilot |
 | keys | HEFKeys | {up,down,left,right,w,s,a,d} booleans |
 | fpsMultiplier | number | Frame time scaling |
@@ -127,6 +128,39 @@ Every frame, your engine receives a typed `HEFCtx` table (see `HEFContext.lua`):
 | mass | number | Vehicle mass |
 | subSteps, physicsDelta | number | Physics timing |
 | blocked | HEFBlocked | {up,down,left,right} wall collision |
+| fuelPercent | number | Remaining fuel (0..100, lazy-read) |
+| engineCondition | number | Engine part condition (0..100, -1 if absent, lazy-read) |
+| angleX, angleY, angleZ | number | Vehicle Euler angles (degrees) |
+| positionDeltaSpeed | number | Ground speed from position delta (m/s) |
+
+### Output Closures (ctx)
+
+Instead of calling adapters or game APIs directly, use ctx closures:
+
+| Closure | Description |
+|---------|-------------|
+| `ctx.applyForce(fx, fy, fz)` | Apply physics force (Bullet space, adapter-wrapped) |
+| `ctx.setAngles(x, y, z)` | Set vehicle Euler angles (degrees) |
+| `ctx.setPhysicsActive(active)` | Wake/sleep Bullet physics body |
+
+The correction context (`cctx`) also provides `cctx.applyForce(fx, fy, fz)`.
+
+### Registering Engine Parameters
+
+Register your engine's tunable parameters via `HeliConfig.registerParams()`:
+
+```lua
+-- In your engine's config file (e.g., YourEngineHeliConfig.lua):
+HeliConfig.registerParams({
+    myParam = { ns = "YourEngine", field = "MyParam", default = 1.0, min = 0, max = 10, desc = "..." },
+}, { "myParam" })  -- display order
+
+-- Define typed getters on HeliConfig (Lua extension method pattern):
+function HeliConfig.GetMyParam() return HeliConfig.get("myParam") end
+```
+
+The string key lives only in the getter definition. All engine code uses `HeliConfig.GetMyParam()`.
+See `FBWHeliConfig.lua` for a complete example.
 
 ### What Your Engine Must Return
 
@@ -168,7 +202,8 @@ shared/HEF/
     Util/                      — HeliConfig, HeliUtil, HeliCompat, HeliTerrainUtil
   Engines/
     IFlightEngine.lua          — interface + registry
-    FBW/                       — fly-by-wire engine (7 files, uses Core/Toolkit)
+    FBW/                       — fly-by-wire engine (8 files, uses Core/Toolkit)
+      FBWHeliConfig.lua        — FBW params + typed getters (registers with HeliConfig)
 
 client/HeliAbility/
   HeliSimService.lua           — thin dispatcher (delegates to active engine)

@@ -344,13 +344,16 @@ for the current session, but the sandbox default is restored on game restart.
 
 **`HEFContext.lua`** — Per-frame context (OnTick phase)
 - `@class HEFCtx` + `CTX_FIELDS` (runtime validators) + `build(vehicle, playerObj, tempVector2)`
-- Reads: keyboard, velocity (one adapter call), terrain, wall blocking, position, mass, physics timing
+- Reads: keyboard, velocity, terrain, wall blocking, position, mass, physics timing, angles
+- Lazy reads (via `__index` + `rawset` cache): `fuelPercent`, `engineCondition` — deferred until first access so framework side-effects (e.g., consumeGas) are reflected
+- Output closures: `applyForce(fx,fy,fz)`, `setAngles(x,y,z)`, `setPhysicsActive(active)` — engines write through these instead of calling adapters/game APIs directly
 - Sub-types: `@class HEFKeys`, `@class HEFBlocked`
 - **Changes when**: new data needed by engines (add field here + in builder)
 
 **`HEFCorrectionCtx.lua`** — Correction-phase context (OnTickEvenPaused phase)
 - `@class HEFCorrectionCtx` + `CTX_FIELDS` + `build(vehicle)`
 - Reads: fresh post-physics velocity, mass
+- Output closure: `applyForce(fx,fy,fz)`
 - **Changes when**: correction path needs additional data
 
 **`HEFUpdateResult.lua`** — Mandatory return from `update(ctx)` (`@class` + `new()`)
@@ -407,10 +410,19 @@ Reusable utilities for engine authors. Not required — engines can use raw math
 
 ### Engines/FBW/ — Fly-by-wire engine (`shared/HEF/Engines/FBW/`)
 
+**`FBWHeliConfig.lua`** — FBW parameter definitions + typed getters
+- Registers FBW params with `HeliConfig.registerParams()` at file scope
+- Sandbox-tunable: gravity, enginedead, deadfall, kp, brake, accel, decel, ascend, descend, hspeed, yawspeed
+- Runtime-only: pgain, dgain, maxerr, fstopgain, yawgain, autolevel
+- Typed getters on HeliConfig (extension methods): `GetGravity()`, `GetAscend()`, etc.
+- **Changes when**: FBW tuning parameter added/removed/renamed
+
 **`FBWEngine.lua`** — Facade implementing IFlightEngine
 - `update(ctx:HEFCtx)` → HEFUpdateResult (horizontal + vertical + rotation)
 - `updateGround(ctx:HEFCtx)` → delegates to Toolkit/GroundModel
 - `applyCorrectionForces(cctx:HEFCorrectionCtx)` — optional 0-frame delay path
+- Uses ctx output closures: `ctx.applyForce()`, `ctx.setAngles()` (no direct adapter calls)
+- Uses ctx read fields: `ctx.fuelPercent`, `ctx.engineCondition`, `ctx.angleX/Y/Z`, `ctx.positionDeltaSpeed`
 - Lifecycle, tunables, sandbox options, debug state, commands
 - Registers with deferred fallback: immediate if IFlightEngine loaded, else OnGameStart
 - Uses Toolkit instances: `SimModel2D` for sim, `ErrorTracker2D` for error tracking
@@ -421,7 +433,7 @@ Reusable utilities for engine authors. Not required — engines can use raw math
 **`FBWForceComputer.lua`** — PD correction + thrust force math
 **`FBWYawController.lua`** — Yaw MPC (simYaw tracking + re-anchor)
 **`FBWInputProcessor.lua`** — Key → rotation deltas (uses ctx.blocked, not HeliTerrainUtil)
-**`FBWFlightModel.lua`** — Thin wrapper around Toolkit/VerticalModel (extracts vehicle state, passes config)
+**`FBWFlightModel.lua`** — Thin wrapper around Toolkit/VerticalModel (reads ctx fields, passes config)
 
 ### Core/Util/ — Foundational utilities + config (`shared/HEF/Core/Util/`)
 
@@ -429,15 +441,17 @@ Reusable utilities for engine authors. Not required — engines can use raw math
 - `toLuaNum(v)`, `normalizeAngle(angle)`
 - **Changes when**: Kahlua coercion behavior changes
 
-**`HeliConfig.lua`** — Centralized configuration
-- Single source of truth for all tuning parameters (sandbox defaults + runtime overrides)
-- `get(shorthand)` — reads: runtime override → SandboxVars → hardcoded default
-- `set(shorthand, value)` — session-only override
-- `getParamDefs()` — returns PARAMS/PARAM_ORDER for HeliDebugCommands display
+**`HeliConfig.lua`** — Centralized configuration (framework params only)
+- Framework params (HEF.*) defined here. Engine params registered via `registerParams()`.
+- `get(shorthand)` — reads: runtime override → SandboxVars → hardcoded default (nil-guarded)
+- `set(shorthand, value)` — session-only override (nil-guarded)
+- `registerParams(params, order)` — engines register their own params at load time (see FBWHeliConfig)
+- `getParamDefs()` — returns PARAMS/PARAM_ORDER (includes registered engine params)
+- Typed getters: `GetMaxalt()`, `GetWarmup()`, `GetWalldmg()`, `GetFall()`, `GetFallgain()`
 - Named constants for all flight model magic numbers (thresholds, margins, multipliers)
 - Physics constants: `VEL_FORCE_FACTOR`, `PD_ERROR_THRESHOLD`
 - `TARGET_FPS = 90` and `MIN_FPS = 10` — shared by all modules (no local duplicates)
-- **Changes when**: new tunable parameter added, default value changes
+- **Changes when**: new framework parameter added, constant value changes
 
 **`HeliCompat.lua`** — Handler conflict resolution
 - pcall wrapper for `getNumClassFields` (returns 0 instead of throwing in non-debug mode)
@@ -544,12 +558,13 @@ HeliFlightEngineFramework/          ← project root (KNOWLEDGE.md, README.md, w
                   VerticalModel.lua    ← default W/S/hover/fall vertical model
                 Util/
                   HeliUtil.lua
-                  HeliConfig.lua       ← + getEngineName() engine selector
+                  HeliConfig.lua       ← framework params + registerParams() + getEngineName()
                   HeliCompat.lua
                   HeliTerrainUtil.lua
               Engines/
                 IFlightEngine.lua      ← interface + registry (REQUIRED + OPTIONAL methods)
                 FBW/
+                  FBWHeliConfig.lua   ← FBW params + getters (registers with HeliConfig)
                   FBWEngine.lua        ← facade implementing IFlightEngine
                   FBWOrientation.lua   ← uses Models/Quaternion
                   FBWFilters.lua
@@ -627,9 +642,10 @@ are safe because Core/Toolkit/ loads before Engines/FBW/.
   └─────────────────────────────────┘
                   │
   ┌── Engines/FBW/ ─────────────────┐
+  │ FBWHeliConfig (params+getters)  │ → registers with HeliConfig
   │ FBWEngine (facade)              │ → registers with IFlightEngine
   │ FBWOrientation, FBWFilters,     │ → uses Core/Models, Core/Toolkit
-  │ FBWForceComputer, FBWYawCtrl,   │
+  │ FBWForceComputer, FBWYawCtrl,   │ → uses ctx closures (no adapter calls)
   │ FBWInputProcessor, FBWFlightMdl │
   └─────────────────────────────────┘
                   │

@@ -44,11 +44,11 @@ function FBWInputProcessor.computeRotationDeltas(keys, fpsMultiplier, heliType, 
 
     -- Yaw (A/D keys)
     if keys.a then
-        ay = HeliConfig.get("yawspeed") * fpsMultiplier
+        ay = HeliConfig.GetYawspeed() * fpsMultiplier
         isRotating = true
     end
     if keys.d then
-        ay = -HeliConfig.get("yawspeed") * fpsMultiplier
+        ay = -HeliConfig.GetYawspeed() * fpsMultiplier
         isRotating = true
     end
 
@@ -72,7 +72,7 @@ function FBWInputProcessor.computeRotationDeltas(keys, fpsMultiplier, heliType, 
     else
         -- Auto-level pitch (skip when FA-off)
         if not freeMode then
-            local autoLevelMult = HeliConfig.get("autolevel")
+            local autoLevelMult = HeliConfig.GetAutolevel()
             if angleZ > angle_90 then
                 ax = -basicAccel * HeliConfig.AUTO_LEVEL_PITCH_FACTOR * (angleZ - angle_90) * fpsMultiplier * autoLevelMult
             elseif angleZ < angle_90 then
@@ -100,7 +100,7 @@ function FBWInputProcessor.computeRotationDeltas(keys, fpsMultiplier, heliType, 
         end
     else
         -- Auto-level roll (always active, even in FA-off)
-        local autoLevelMult = HeliConfig.get("autolevel")
+        local autoLevelMult = HeliConfig.GetAutolevel()
         if angleX > angle_90 then
             az = basicAccel * HeliConfig.AUTO_LEVEL_ROLL_FACTOR * (angleX - angle_90) * fpsMultiplier * autoLevelMult
         elseif angleX < angle_90 then

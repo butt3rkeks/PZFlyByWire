@@ -1,22 +1,21 @@
 --[[
     HeliConfig — Centralized configuration for helicopter physics
 
-    Single source of truth for ALL tuning parameters, including:
-    - Sandbox-tunable params (read from SandboxVars with hardcoded fallbacks)
-    - Runtime-tunable params (PD gains, yaw gain, auto-level, etc.)
-    - Named constants (thresholds, factors, limits)
+    Single source of truth for the parameter registry, override system, and constants.
+    Framework params (HEF.*) are defined here. Engine params are registered at load
+    time via HeliConfig.registerParams() — see FBWHeliConfig.lua for FBW params.
 
     Runtime overrides via /hef commands write here. No tunable lives outside HeliConfig.
-    All modules read from HeliConfig.get() or HeliConfig.CONSTANT instead of holding
-    their own tuning state.
+    All modules read from HeliConfig.GetXxx() getters or HeliConfig.CONSTANT instead
+    of holding their own tuning state.
 ]]
 
 HeliConfig = {}
 
 -------------------------------------------------------------------------------------
--- Parameter definitions: single source of truth for names, defaults, descriptions.
+-- Parameter definitions: framework params only.
+-- Engine params are added via registerParams() at load time.
 -- Sandbox-options.txt must match these defaults for sandbox-tunable params.
--- Runtime-only params (pgain, dgain, etc.) don't appear in sandbox-options.txt.
 -------------------------------------------------------------------------------------
 local PARAMS = {
     -- Framework sandbox-tunable (HEF.* namespace, persisted per-save)
@@ -25,35 +24,12 @@ local PARAMS = {
     walldmg     = { ns = "HEF", field = "WallDamageInterval",  default = 60,   min = 10,   max = 600,    desc = "Ticks between wall collision damage" },
     fall        = { ns = "HEF", field = "EngineOffFallSpeed",  default = 24.5, min = 2.0,  max = 50.0,   desc = "Engine-off fall speed (Bullet Y/s)" },
     fallgain    = { ns = "HEF", field = "FallPDGain",          default = 8.0,  min = 1.0,  max = 20.0,   desc = "Fall PD gain (framework engine-off path)" },
-
-    -- FBW engine sandbox-tunable (FBW.* namespace, persisted per-save)
-    gravity     = { ns = "FBW", field = "GravityEstimate",     default = 9.8,   min = 5.0,   max = 20.0,   desc = "Gravity (Bullet units/s^2)" },
-    enginedead  = { ns = "FBW", field = "EngineDeadCondition", default = 10,   min = 0,    max = 100,    desc = "Engine condition % for engine-dead" },
-    deadfall    = { ns = "FBW", field = "EngineDeadFallSpeed", default = 35.0, min = 3.0,  max = 60.0,   desc = "Engine-dead fall speed (Bullet Y/s)" },
-    kp          = { ns = "FBW", field = "ResponsivenessGain",  default = 8.0,   min = 1.0,   max = 20.0,   desc = "Vertical PD gain (responsiveness)" },
-    brake       = { ns = "FBW", field = "BrakingMultiplier",   default = 0.05,  min = 0.01,  max = 1.0,    desc = "Base inertia rate (0.05=1s, 0.10=0.5s)" },
-    accel       = { ns = "FBW", field = "AccelMultiplier",     default = 1.5,   min = 0.1,   max = 10.0,   desc = "Acceleration inertia multiplier on brake" },
-    decel       = { ns = "FBW", field = "DecelMultiplier",     default = 2.25,  min = 0.1,   max = 10.0,   desc = "Deceleration inertia multiplier on brake" },
-    ascend      = { ns = "FBW", field = "AscendSpeed",         default = 8.0,   min = 1.0,   max = 30.0,   desc = "Ascend speed (Bullet Y/s)" },
-    descend     = { ns = "FBW", field = "DescendSpeed",        default = 14.0,  min = 1.0,   max = 25.0,   desc = "Descend speed (Bullet Y/s)" },
-    hspeed      = { ns = "FBW", field = "MaxHorizontalSpeed",  default = 90.0,  min = 10.0,  max = 1000.0, desc = "Max horizontal speed (m/s)" },
-    yawspeed    = { ns = "FBW", field = "YawSpeed",            default = 0.7,   min = 0.1,   max = 5.0,    desc = "Yaw rotation speed (deg/frame at target FPS)" },
-
-    -- Runtime-only (session overrides, from /hef commands)
-    pgain       = { default = 7.0,   min = 0.1,  max = 50.0, desc = "Horizontal position error P gain" },
-    dgain       = { default = 0.3,   min = 0.0,  max = 5.0,  desc = "Horizontal position error D gain (damping)" },
-    maxerr      = { default = 10.0,  min = 1.0,  max = 100.0, desc = "Max position error (tanh saturation, meters)" },
-    fstopgain   = { default = 0.3,   min = 0.0,  max = 2.0,  desc = "Velocity damping strength (0.3=smooth, 0.8=snappy)" },
-    yawgain     = { default = 0.9,   min = 0.0,  max = 1.0,  desc = "Yaw correction strength (0=none, 1=hard lock)" },
-    autolevel   = { default = 1.0,   min = 0.1,  max = 5.0,  desc = "Auto-leveling speed multiplier" },
 }
 
--- Ordered list for consistent display in /hef show
+-- Ordered list for consistent display in /hef show.
+-- registerParams() appends engine entries to this list.
 local PARAM_ORDER = {
     "maxalt", "warmup", "walldmg", "fall", "fallgain",
-    "gravity", "enginedead", "deadfall", "kp", "brake", "accel", "decel",
-    "ascend", "descend", "hspeed", "yawspeed",
-    "pgain", "dgain", "maxerr", "fstopgain", "yawgain", "autolevel",
 }
 
 -- Runtime overrides (session-only, from /hef commands)
@@ -67,6 +43,7 @@ local _overrides = {}
 --- @param shorthand string Parameter key (e.g., "gravity", "pgain")
 --- @return number
 function HeliConfig.get(shorthand)
+    if shorthand == nil then error("HeliConfig.get: nil key") end
     -- Runtime override takes priority (session-only, from /hef commands)
     if _overrides[shorthand] ~= nil then
         return _overrides[shorthand]
@@ -90,6 +67,7 @@ end
 --- @param value number New value
 --- @return number Actual value stored (after clamping)
 function HeliConfig.set(shorthand, value)
+    if shorthand == nil then error("HeliConfig.set: nil key") end
     local p = PARAMS[shorthand]
     if p then
         if p.min and value < p.min then value = p.min end
@@ -108,6 +86,29 @@ end
 --- @return table PARAMS, table PARAM_ORDER
 function HeliConfig.getParamDefs()
     return PARAMS, PARAM_ORDER
+end
+
+--- Register engine params. Called at file scope by engine config modules
+--- (e.g., FBWHeliConfig.lua). Merges param definitions into the shared registry
+--- and appends keys to PARAM_ORDER for /hef show display.
+--- @param params table Map of shorthand → param definition (same format as PARAMS entries)
+--- @param order string[]|nil Optional ordered list of keys for display. If nil, keys are appended in pairs() order.
+function HeliConfig.registerParams(params, order)
+    for name, def in pairs(params) do
+        if PARAMS[name] then
+            error("HeliConfig.registerParams: param '" .. name .. "' already registered")
+        end
+        PARAMS[name] = def
+    end
+    if order then
+        for _, name in ipairs(order) do
+            PARAM_ORDER[#PARAM_ORDER + 1] = name
+        end
+    else
+        for name, _ in pairs(params) do
+            PARAM_ORDER[#PARAM_ORDER + 1] = name
+        end
+    end
 end
 
 -------------------------------------------------------------------------------------
@@ -221,3 +222,20 @@ HeliConfig.MAX_SPEED_OVERRIDE = 999
 
 -- History buffer size for PD error rate computation.
 HeliConfig.HISTORY_SIZE = 30
+
+-------------------------------------------------------------------------------------
+-- Typed getters: framework params only. String key lives here only.
+-- Engine getters are defined by engine config modules (e.g., FBWHeliConfig.lua).
+-- Engines should use HeliConfig.GetXxx() instead of HeliConfig.get("string").
+-------------------------------------------------------------------------------------
+
+--- @return number Max flight ceiling (Z-levels)
+function HeliConfig.GetMaxalt() return HeliConfig.get("maxalt") end
+--- @return number Startup delay (frames before flight)
+function HeliConfig.GetWarmup() return HeliConfig.get("warmup") end
+--- @return number Ticks between wall collision damage
+function HeliConfig.GetWalldmg() return HeliConfig.get("walldmg") end
+--- @return number Engine-off fall speed (Bullet Y/s)
+function HeliConfig.GetFall() return HeliConfig.get("fall") end
+--- @return number Fall PD gain (framework engine-off path)
+function HeliConfig.GetFallgain() return HeliConfig.get("fallgain") end

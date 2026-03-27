@@ -1,25 +1,22 @@
 --[[
     FBWFlightModel — Vertical flight behavior (thin wrapper around Toolkit/VerticalModel)
 
-    Reads tuning parameters from HeliConfig, extracts vehicle state,
-    delegates to VerticalModel.computeTarget().
+    Reads tuning parameters from HeliConfig getters, reads vehicle state
+    from ctx fields, delegates to VerticalModel.computeTarget().
 ]]
 
 FBWFlightModel = {}
 
--- Cached config table (rebuilt when HeliConfig values change via /hef commands)
-local _verticalCfg = nil
-
 local function getVerticalCfg()
-    -- Rebuild each call — HeliConfig.get() checks runtime overrides
+    -- Rebuild each call — getters check runtime overrides
     return {
-        ascendSpeed        = HeliConfig.get("ascend"),
-        descendSpeed       = HeliConfig.get("descend"),
-        gravityFallSpeed   = HeliConfig.get("fall"),
-        engineDeadFallSpeed = HeliConfig.get("deadfall"),
-        engineDeadCondition = HeliConfig.get("enginedead"),
+        ascendSpeed        = HeliConfig.GetAscend(),
+        descendSpeed       = HeliConfig.GetDescend(),
+        gravityFallSpeed   = HeliConfig.GetFall(),
+        engineDeadFallSpeed = HeliConfig.GetDeadfall(),
+        engineDeadCondition = HeliConfig.GetEnginedead(),
         minDescentAltitude = HeliConfig.MIN_DESCENT_ALTITUDE,
-        maxAltitude        = HeliConfig.get("maxalt"),
+        maxAltitude        = HeliConfig.GetMaxalt(),
         ceilingZoneHeight  = HeliConfig.CEILING_ZONE_HEIGHT,
     }
 end

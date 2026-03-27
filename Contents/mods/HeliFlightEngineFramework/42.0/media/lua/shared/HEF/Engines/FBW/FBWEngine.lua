@@ -43,7 +43,7 @@ function FBWEngine.resetFlightState()
     _hasTiltInput = false
     _hasHorizontalInput = false
     _flightAssistOff = false
-    _warmupCounter = HeliConfig.get("warmup")
+    _warmupCounter = HeliConfig.GetWarmup()
     _simInitialized = false
     _prevPosX = nil
     _prevPosZ = nil
@@ -150,7 +150,7 @@ function FBWEngine.update(ctx)
 
     -- 8. FBWFilters pipeline: noiseFloor → thrustDecomposition → speedClamp → directionClamp
     local noiseFloor = HeliConfig.TILT_NOISE_FLOOR
-    local maxHSpeed = HeliConfig.get("hspeed")
+    local maxHSpeed = HeliConfig.GetHspeed()
 
     local effectiveTilt = FBWFilters.applyNoiseFloor(totalTiltRad, noiseFloor)
 
@@ -207,8 +207,8 @@ function FBWEngine.update(ctx)
 
     local fps = ctx.fps
     local dt = 1.0 / fps
-    local baseBrake = HeliConfig.get("brake")
-    local effectiveInertia = baseBrake * (hasHInput and HeliConfig.get("accel") or HeliConfig.get("decel"))
+    local baseBrake = HeliConfig.GetBrake()
+    local effectiveInertia = baseBrake * (hasHInput and HeliConfig.GetAccel() or HeliConfig.GetDecel())
 
     -- 12. Sim model advance
     _sim:advance(desiredHX, desiredHZ, dt, effectiveInertia)
@@ -248,15 +248,15 @@ function FBWEngine.update(ctx)
     end
 
     -- 18. Dual-path activation
-    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.get("maxerr"))
+    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxerr())
     local errMag = math.sqrt(errX * errX + errZ * errZ)
     local hSpeedActual = VelocityUtil.horizontalSpeed(velX, velZ)
     local dualPathActive = FBWEngine.isWarmedUp() and
         (hasHInput or errMag > HeliConfig.DUAL_PATH_ERROR_THRESHOLD or hSpeedActual > HeliConfig.DUAL_PATH_SPEED_THRESHOLD)
 
     -- 19. Vertical thrust
-    local Kp = HeliConfig.get("kp")
-    local gravity = HeliConfig.get("gravity")
+    local Kp = HeliConfig.GetKp()
+    local gravity = HeliConfig.GetGravity()
     local fy = FBWForceComputer.computeThrustForce(
         targetVelY, velY, ctx.mass, Kp, gravity,
         ctx.subSteps, ctx.physicsDelta, gravComp)
@@ -301,9 +301,9 @@ function FBWEngine.updateGround(ctx)
     return GroundModel.update(ctx, {
         velocityKillFactor = HeliConfig.GROUND_VELOCITY_KILL,
         velocityThreshold  = HeliConfig.GROUND_VELOCITY_THRESHOLD,
-        ascendSpeed        = HeliConfig.get("ascend"),
-        gravity            = HeliConfig.get("gravity"),
-        kp                 = HeliConfig.get("kp"),
+        ascendSpeed        = HeliConfig.GetAscend(),
+        gravity            = HeliConfig.GetGravity(),
+        kp                 = HeliConfig.GetKp(),
     })
 end
 
@@ -312,14 +312,14 @@ end
 -------------------------------------------------------------------------------------
 --- @param cctx HEFCorrectionCtx
 function FBWEngine.applyCorrectionForces(cctx)
-    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.get("maxerr"))
+    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxerr())
     local errMag = math.sqrt(errX * errX + errZ * errZ)
 
     local fx, fz = FBWForceComputer.computeCorrectionForce(
         errX, errZ, errRateX, errRateZ, errMag,
-        HeliConfig.get("pgain"), HeliConfig.get("dgain"),
+        HeliConfig.GetPgain(), HeliConfig.GetDgain(),
         cctx.velX, cctx.velZ, cctx.mass, HeliConfig.VEL_FORCE_FACTOR,
-        HeliConfig.get("fstopgain"), _flightAssistOff,
+        HeliConfig.GetFstopgain(), _flightAssistOff,
         HeliConfig.FA_OFF_DEADZONE, HeliConfig.FA_OFF_MIN_DAMPING_SPEED)
 
     cctx.applyForce(fx, 0, fz)
@@ -400,7 +400,7 @@ end
 
 function FBWEngine.getDebugState()
     local simPosX, simPosZ, simVelX, simVelZ = _sim:getState()
-    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.get("maxerr"))
+    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxerr())
     return {
         simPosX = simPosX, simPosZ = simPosZ,
         simVelX = simVelX, simVelZ = simVelZ,

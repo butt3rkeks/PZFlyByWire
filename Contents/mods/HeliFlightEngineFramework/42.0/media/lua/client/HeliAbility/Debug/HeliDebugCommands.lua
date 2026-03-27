@@ -209,7 +209,7 @@ commands["snap"] = function(_)
     showValue(string.format("Mass=%.0f  FPS=%.0f  SubSteps=%.2f", s.mass or 0, s.fps or 0, s.subSteps or 0))
     showInfo("--- Active Tuning ---")
     showValue(string.format("gravity=%.1f  kp=%.1f  brake=%.2f  hspeed=%.1f",
-        HeliConfig.get("gravity"), HeliConfig.get("kp"), HeliConfig.get("brake"), HeliConfig.get("hspeed")))
+        HeliConfig.GetGravity(), HeliConfig.GetKp(), HeliConfig.GetBrake(), HeliConfig.GetHspeed()))
 end
 
 -------------------------------------------------------------------------------------
