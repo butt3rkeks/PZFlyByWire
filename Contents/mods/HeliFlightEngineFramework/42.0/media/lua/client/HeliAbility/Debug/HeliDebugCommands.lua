@@ -107,7 +107,9 @@ commands["show"] = function(_)
         local wc = vehicle:getScript():getWheelCount()
         showInfo(string.format("  wheels = %d", wc))
         if wc == 0 then
-            showError("  WARNING: 0-wheel vehicle. Spawn a NEW helicopter for wheel override.")
+            showError("  WARNING: 0-wheel vehicle — velocity dampener active (0.1x).")
+            showError("  This vehicle was spawned before HEFWheelInjector ran.")
+            showError("  Despawn and respawn the helicopter to apply the phantom wheel.")
         end
     end
     -- Engine tunables

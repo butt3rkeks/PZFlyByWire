@@ -108,7 +108,56 @@ HEFContext.CTX_FIELDS = {
 -- Called once per frame by HeliMove. Reads keyboard, velocity, terrain, physics.
 -- All per-frame side effects (cache invalidation, velocity adapter state,
 -- physics accumulator) happen here so engines never need to call these APIs.
+--
+-- Allocation strategy: module-local tables are reused across frames to avoid
+-- creating 7+ tables/closures per frame (keys, blocked, ctx, metatable, 3 closures).
+-- Closures and metatable capture 'vehicle' — they are recreated only when the
+-- vehicle reference changes (i.e., between flight sessions, not between frames).
 -------------------------------------------------------------------------------------
+
+-- Reusable tables (populated in-place each frame)
+local _keys = {}
+local _blocked = {}
+local _ctx = {}
+
+-- Vehicle-dependent closures and metatable (recreated on vehicle change)
+local _cachedVehicle = nil
+local _applyForceFn = nil
+local _setAnglesFn = nil
+local _setPhysicsActiveFn = nil
+local _ctxMeta = nil
+
+--- Rebuild closures and metatable when the vehicle reference changes.
+--- Vehicle stays the same for an entire flight session — this runs once per
+--- enter-vehicle, not once per frame.
+--- @param vehicle BaseVehicle
+local function _rebuildVehicleDeps(vehicle)
+    _cachedVehicle = vehicle
+    _applyForceFn = function(fx, fy, fz)
+        HeliForceAdapter.applyForceImmediate(vehicle, fx, fy, fz)
+    end
+    _setAnglesFn = function(x, y, z)
+        vehicle:setAngles(x, y, z)
+    end
+    _setPhysicsActiveFn = function(active)
+        vehicle:setPhysicsActive(active)
+    end
+    -- Lazy fields: deferred until first access so framework side-effects
+    -- (e.g., HeliAuxiliary.consumeGas) that run between build() and engine
+    -- update() are reflected. Cached via rawset on first read.
+    _ctxMeta = { __index = function(t, k)
+        if k == "fuelPercent" then
+            local v = vehicle:getRemainingFuelPercentage()
+            rawset(t, k, v)
+            return v
+        elseif k == "engineCondition" then
+            local enginePart = vehicle:getPartById("Engine")
+            local v = enginePart and enginePart:getCondition() or -1
+            rawset(t, k, v)
+            return v
+        end
+    end }
+end
 
 --- Build the per-frame context table.
 --- @param vehicle BaseVehicle
@@ -120,6 +169,11 @@ function HEFContext.build(vehicle, playerObj, scratchVector)
 
     -- Invalidate per-frame terrain cache before any isBlocked calls
     HeliTerrainUtil.invalidateBlockedCache()
+
+    -- Rebuild closures/metatable if vehicle changed (once per flight session)
+    if vehicle ~= _cachedVehicle then
+        _rebuildVehicleDeps(vehicle)
+    end
 
     -- Derived values
     local heliType = GetHeliType(vehicle)
@@ -138,17 +192,15 @@ function HEFContext.build(vehicle, playerObj, scratchVector)
     local angleY = toLuaNum(vehicle:getAngleY())
     local angleZ = toLuaNum(vehicle:getAngleZ())
 
-    -- Keyboard state
-    local keys = {
-        up    = isKeyDown(Keyboard.KEY_UP),
-        down  = isKeyDown(Keyboard.KEY_DOWN),
-        left  = isKeyDown(Keyboard.KEY_LEFT),
-        right = isKeyDown(Keyboard.KEY_RIGHT),
-        w     = isKeyDown(Keyboard.KEY_W),
-        s     = isKeyDown(Keyboard.KEY_S),
-        a     = isKeyDown(Keyboard.KEY_A),
-        d     = isKeyDown(Keyboard.KEY_D),
-    }
+    -- Keyboard state (repopulate reusable table)
+    _keys.up    = isKeyDown(Keyboard.KEY_UP)
+    _keys.down  = isKeyDown(Keyboard.KEY_DOWN)
+    _keys.left  = isKeyDown(Keyboard.KEY_LEFT)
+    _keys.right = isKeyDown(Keyboard.KEY_RIGHT)
+    _keys.w     = isKeyDown(Keyboard.KEY_W)
+    _keys.s     = isKeyDown(Keyboard.KEY_S)
+    _keys.a     = isKeyDown(Keyboard.KEY_A)
+    _keys.d     = isKeyDown(Keyboard.KEY_D)
 
     -- Velocity (one read per frame — adapter has stateful side effects)
     local rawVelX, rawVelY, rawVelZ = HeliVelocityAdapter.getVelocity(vehicle)
@@ -156,68 +208,48 @@ function HEFContext.build(vehicle, playerObj, scratchVector)
     -- Physics timing (one read per frame — accumulator advances)
     local subSteps, physicsDelta = HeliForceAdapter.getSubStepsThisFrame()
 
-    -- Wall blocking (uses per-frame cache)
-    local blocked = {
-        up    = HeliTerrainUtil.isBlocked(playerObj, "UP", vehicle, scratchVector),
-        down  = HeliTerrainUtil.isBlocked(playerObj, "DOWN", vehicle, scratchVector),
-        left  = HeliTerrainUtil.isBlocked(playerObj, "LEFT", vehicle, scratchVector),
-        right = HeliTerrainUtil.isBlocked(playerObj, "RIGHT", vehicle, scratchVector),
-    }
+    -- Wall blocking (repopulate reusable table, uses per-frame cache)
+    _blocked.up    = HeliTerrainUtil.isBlocked(playerObj, "UP", vehicle, scratchVector)
+    _blocked.down  = HeliTerrainUtil.isBlocked(playerObj, "DOWN", vehicle, scratchVector)
+    _blocked.left  = HeliTerrainUtil.isBlocked(playerObj, "LEFT", vehicle, scratchVector)
+    _blocked.right = HeliTerrainUtil.isBlocked(playerObj, "RIGHT", vehicle, scratchVector)
 
     -- Position-delta speed (already computed as side-effect of getVelocity above)
     local positionDeltaSpeed = HeliVelocityAdapter.getPositionDeltaSpeed()
 
-    local ctx = {
-        vehicle = vehicle,
-        playerObj = playerObj,
-        keys = keys,
-        fpsMultiplier = fpsMultiplier,
-        fps = fps,
-        heliType = heliType,
-        currentAltitude = currentAltitude,
-        groundLevelZ = groundLevelZ,
-        scratchVector = scratchVector,
-        posX = posX,
-        posZ = posZ,
-        velX = toLuaNum(rawVelX),
-        velY = toLuaNum(rawVelY),
-        velZ = toLuaNum(rawVelZ),
-        mass = mass,
-        subSteps = subSteps,
-        physicsDelta = physicsDelta,
-        blocked = blocked,
-        -- Vehicle state (eagerly read)
-        angleX = angleX,
-        angleY = angleY,
-        angleZ = angleZ,
-        positionDeltaSpeed = positionDeltaSpeed,
-        -- Output closures
-        applyForce = function(fx, fy, fz)
-            HeliForceAdapter.applyForceImmediate(vehicle, fx, fy, fz)
-        end,
-        setAngles = function(x, y, z)
-            vehicle:setAngles(x, y, z)
-        end,
-        setPhysicsActive = function(active)
-            vehicle:setPhysicsActive(active)
-        end,
-    }
+    -- Clear lazy-cached fields from previous frame (force fresh read from vehicle)
+    _ctx.fuelPercent = nil
+    _ctx.engineCondition = nil
 
-    -- Lazy fields: deferred until first access so framework side-effects
-    -- (e.g., HeliAuxiliary.consumeGas) that run between build() and engine
-    -- update() are reflected. Cached via rawset on first read.
-    setmetatable(ctx, { __index = function(t, k)
-        if k == "fuelPercent" then
-            local v = vehicle:getRemainingFuelPercentage()
-            rawset(t, k, v)
-            return v
-        elseif k == "engineCondition" then
-            local enginePart = vehicle:getPartById("Engine")
-            local v = enginePart and enginePart:getCondition() or -1
-            rawset(t, k, v)
-            return v
-        end
-    end })
+    -- Repopulate reusable ctx table
+    _ctx.vehicle = vehicle
+    _ctx.playerObj = playerObj
+    _ctx.keys = _keys
+    _ctx.fpsMultiplier = fpsMultiplier
+    _ctx.fps = fps
+    _ctx.heliType = heliType
+    _ctx.currentAltitude = currentAltitude
+    _ctx.groundLevelZ = groundLevelZ
+    _ctx.scratchVector = scratchVector
+    _ctx.posX = posX
+    _ctx.posZ = posZ
+    _ctx.velX = toLuaNum(rawVelX)
+    _ctx.velY = toLuaNum(rawVelY)
+    _ctx.velZ = toLuaNum(rawVelZ)
+    _ctx.mass = mass
+    _ctx.subSteps = subSteps
+    _ctx.physicsDelta = physicsDelta
+    _ctx.blocked = _blocked
+    _ctx.angleX = angleX
+    _ctx.angleY = angleY
+    _ctx.angleZ = angleZ
+    _ctx.positionDeltaSpeed = positionDeltaSpeed
+    _ctx.applyForce = _applyForceFn
+    _ctx.setAngles = _setAnglesFn
+    _ctx.setPhysicsActive = _setPhysicsActiveFn
 
-    return ctx
+    -- Metatable for lazy fields (same reference if vehicle unchanged)
+    setmetatable(_ctx, _ctxMeta)
+
+    return _ctx
 end

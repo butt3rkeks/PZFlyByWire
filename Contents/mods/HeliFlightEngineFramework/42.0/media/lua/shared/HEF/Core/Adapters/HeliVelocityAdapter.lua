@@ -82,9 +82,9 @@ function HeliVelocityAdapter.getVelocity(vehicle)
     _prevPosX = posX
     _prevPosZ = posZ
     _prevFPS = fps
-    _lastRawVelY = rawVelocityY
+    _lastRawVelY = toLuaNum(rawVelocityY)
 
-    return _smoothVelX, rawVelocityY, _smoothVelZ
+    return _smoothVelX, _lastRawVelY, _smoothVelZ
 end
 
 --- Get the last-computed velocity without mutating adapter state.

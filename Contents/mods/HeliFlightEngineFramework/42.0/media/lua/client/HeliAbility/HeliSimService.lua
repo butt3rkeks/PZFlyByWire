@@ -22,124 +22,115 @@ function HeliSimService._resolveEngine()
     end
 end
 
+--- Lazy-resolve the active engine on first call. After resolution, _activeEngine
+--- is stable for the session — engine selection only changes on save reload.
+local function engine()
+    if not _activeEngine then HeliSimService._resolveEngine() end
+    return _activeEngine
+end
+
 -- Frame updates
 
 --- @param ctx HEFCtx
 --- @return HEFUpdateResult
 function HeliSimService.update(ctx)
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.update(ctx)
+    return engine().update(ctx)
 end
 
 --- @param ctx HEFCtx
 --- @return HEFGroundResult
 function HeliSimService.updateGround(ctx)
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.updateGround(ctx)
+    return engine().updateGround(ctx)
 end
 
 --- @param cctx HEFCorrectionCtx
 function HeliSimService.applyCorrectionForces(cctx)
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    if _activeEngine.applyCorrectionForces then
-        return _activeEngine.applyCorrectionForces(cctx)
+    local e = engine()
+    if e.applyCorrectionForces then
+        return e.applyCorrectionForces(cctx)
     end
 end
 
 -- Lifecycle
 
 function HeliSimService.resetFlightState()
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.resetFlightState()
+    return engine().resetFlightState()
 end
 
 --- @param vehicle BaseVehicle
 function HeliSimService.initFlight(vehicle)
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.initFlight(vehicle)
+    return engine().initFlight(vehicle)
 end
 
 function HeliSimService.tickWarmup()
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.tickWarmup()
+    return engine().tickWarmup()
 end
 
 --- @return boolean
 function HeliSimService.isWarmedUp()
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.isWarmedUp()
+    return engine().isWarmedUp()
 end
 
 -- Tunables
 
 --- @return HEFTunable[]
 function HeliSimService.getTunables()
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.getTunables()
+    return engine().getTunables()
 end
 
 --- @param name string
 --- @return number
 function HeliSimService.getTunable(name)
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.getTunable(name)
+    return engine().getTunable(name)
 end
 
 --- @param name string
 --- @param value number
 function HeliSimService.setTunable(name, value)
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.setTunable(name, value)
+    return engine().setTunable(name, value)
 end
 
 -- Sandbox options
 
 --- @return HEFSandboxOptions
 function HeliSimService.getSandboxOptions()
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.getSandboxOptions()
+    return engine().getSandboxOptions()
 end
 
 -- Debug
 
 --- @return table
 function HeliSimService.getDebugState()
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.getDebugState()
+    return engine().getDebugState()
 end
 
 --- @return string[]
 function HeliSimService.getDebugColumns()
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.getDebugColumns()
+    return engine().getDebugColumns()
 end
 
 --- @return number
 function HeliSimService.getIntendedYaw()
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.getIntendedYaw()
+    return engine().getIntendedYaw()
 end
 
 -- Commands
 
 --- @return HEFCommand[]
 function HeliSimService.getCommands()
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.getCommands()
+    return engine().getCommands()
 end
 
 --- @param name string
 --- @param args string
 --- @return string
 function HeliSimService.executeCommand(name, args)
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.executeCommand(name, args)
+    return engine().executeCommand(name, args)
 end
 
 -- Metadata
 
 --- @return HEFEngineInfo
 function HeliSimService.getInfo()
-    if not _activeEngine then HeliSimService._resolveEngine() end
-    return _activeEngine.getInfo()
+    return engine().getInfo()
 end

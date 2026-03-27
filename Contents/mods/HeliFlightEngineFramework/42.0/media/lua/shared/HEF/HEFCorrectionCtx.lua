@@ -42,21 +42,36 @@ HEFCorrectionCtx.CTX_FIELDS = {
 
 -------------------------------------------------------------------------------------
 -- Builder
+--
+-- Reuses a module-local table and closure to avoid per-frame allocations.
+-- The closure captures 'vehicle' — it is recreated only when vehicle changes.
 -------------------------------------------------------------------------------------
+
+local _cctx = {}
+local _cctxCachedVehicle = nil
+local _cctxApplyForceFn = nil
 
 --- Build the correction-phase context.
 --- @param vehicle BaseVehicle
 --- @return HEFCorrectionCtx
 function HEFCorrectionCtx.build(vehicle)
     local toLuaNum = HeliUtil.toLuaNum
-    local vx, _, vz = HeliVelocityAdapter.getVelocity(vehicle)
-    return {
-        vehicle = vehicle,
-        mass = toLuaNum(vehicle:getMass()),
-        velX = toLuaNum(vx),
-        velZ = toLuaNum(vz),
-        applyForce = function(fx, fy, fz)
+
+    -- Rebuild closure if vehicle changed (once per flight session)
+    if vehicle ~= _cctxCachedVehicle then
+        _cctxCachedVehicle = vehicle
+        _cctxApplyForceFn = function(fx, fy, fz)
             HeliForceAdapter.applyForceImmediate(vehicle, fx, fy, fz)
-        end,
-    }
+        end
+    end
+
+    local vx, _, vz = HeliVelocityAdapter.getVelocity(vehicle)
+
+    _cctx.vehicle = vehicle
+    _cctx.mass = toLuaNum(vehicle:getMass())
+    _cctx.velX = toLuaNum(vx)
+    _cctx.velZ = toLuaNum(vz)
+    _cctx.applyForce = _cctxApplyForceFn
+
+    return _cctx
 end
