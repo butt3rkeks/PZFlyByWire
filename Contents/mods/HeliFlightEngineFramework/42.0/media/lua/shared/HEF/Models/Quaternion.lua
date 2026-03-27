@@ -140,7 +140,147 @@ function Quaternion:unpack()
 end
 
 -------------------------------------------------------------------------------------
--- Conversion
+-- Convenience: Euler extraction
+-------------------------------------------------------------------------------------
+
+--- Convert to Euler angles (degrees). Convenience wrapper around matrix decomposition.
+--- @return number pitch, number yaw, number roll (degrees)
+function Quaternion:toEuler()
+    return Quaternion.matrixToEuler(self:toMatrixComponents())
+end
+
+--- Get pitch angle (rotation around local X).
+--- @return number degrees
+function Quaternion:getPitch()
+    local x, _, _ = self:toEuler()
+    return x
+end
+
+--- Get yaw angle (rotation around Y).
+--- @return number degrees
+function Quaternion:getYaw()
+    local _, y, _ = self:toEuler()
+    return y
+end
+
+--- Get roll angle (rotation around local Z).
+--- @return number degrees
+function Quaternion:getRoll()
+    local _, _, z = self:toEuler()
+    return z
+end
+
+-------------------------------------------------------------------------------------
+-- Convenience: axis vectors (local axes in world space)
+-------------------------------------------------------------------------------------
+
+--- Get the local X axis in world space (row 0 of rotation matrix).
+--- @return number x, number y, number z
+function Quaternion:vectorX()
+    local r00, r01, r02 = self:toMatrixComponents()
+    return r00, r01, r02
+end
+
+--- Get the local Y axis in world space (row 1 of rotation matrix).
+--- @return number x, number y, number z
+function Quaternion:vectorY()
+    local _, _, _, r10, r11, r12 = self:toMatrixComponents()
+    return r10, r11, r12
+end
+
+--- Get the local Z axis in world space (row 2 of rotation matrix).
+--- @return number x, number y, number z
+function Quaternion:vectorZ()
+    local _, _, _, _, _, _, r20, r21, r22 = self:toMatrixComponents()
+    return r20, r21, r22
+end
+
+-------------------------------------------------------------------------------------
+-- Convenience: tilt (return NEW quaternion)
+-------------------------------------------------------------------------------------
+
+--- Rotate around local X axis (pitch). Returns new quaternion.
+--- @param degrees number
+--- @return Quaternion
+function Quaternion:tiltPitch(degrees)
+    return self * Quaternion.fromAxisAngle(math.rad(degrees), 1, 0, 0)
+end
+
+--- Rotate around local Z axis (roll). Returns new quaternion.
+--- @param degrees number
+--- @return Quaternion
+function Quaternion:tiltRoll(degrees)
+    return self * Quaternion.fromAxisAngle(math.rad(degrees), 0, 0, 1)
+end
+
+--- Rotate around world Y axis (yaw). Returns new quaternion.
+--- @param degrees number
+--- @return Quaternion
+function Quaternion:tiltYaw(degrees)
+    return Quaternion.fromAxisAngle(math.rad(degrees), 0, 1, 0) * self
+end
+
+--- General rotation: rotate around arbitrary axis. Returns new quaternion.
+--- @param degrees number
+--- @param ax number Axis X component
+--- @param ay number Axis Y component
+--- @param az number Axis Z component
+--- @return Quaternion
+function Quaternion:rotateAround(degrees, ax, ay, az)
+    return self * Quaternion.fromAxisAngle(math.rad(degrees), ax, ay, az)
+end
+
+-------------------------------------------------------------------------------------
+-- Convenience: interpolation
+-------------------------------------------------------------------------------------
+
+--- Spherical linear interpolation between two quaternions.
+--- @param a Quaternion Start orientation
+--- @param b Quaternion End orientation
+--- @param t number Blend factor 0..1
+--- @return Quaternion
+function Quaternion.slerp(a, b, t)
+    local dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
+    -- Flip sign for shortest path
+    local bw, bx, by, bz = b.w, b.x, b.y, b.z
+    if dot < 0 then
+        dot = -dot
+        bw, bx, by, bz = -bw, -bx, -by, -bz
+    end
+    local s0, s1
+    if dot > 0.9995 then
+        -- Very close — linear interpolation to avoid division by zero
+        s0 = 1 - t
+        s1 = t
+    else
+        local theta = math.acos(clamp(dot, -1, 1))
+        local sinTheta = math.sin(theta)
+        s0 = math.sin((1 - t) * theta) / sinTheta
+        s1 = math.sin(t * theta) / sinTheta
+    end
+    return setmetatable({
+        w = s0 * a.w + s1 * bw,
+        x = s0 * a.x + s1 * bx,
+        y = s0 * a.y + s1 * by,
+        z = s0 * a.z + s1 * bz,
+    }, Quaternion)
+end
+
+-------------------------------------------------------------------------------------
+-- Convenience: constructor alias
+-------------------------------------------------------------------------------------
+
+--- Create quaternion from pitch/yaw/roll (degrees). Self-documenting alias for fromEuler.
+--- @param pitch number degrees
+--- @param yaw number degrees
+--- @param roll number degrees
+--- @return Quaternion
+function Quaternion.fromPitchYawRoll(pitch, yaw, roll)
+    return Quaternion.fromEuler(math.rad(pitch), math.rad(yaw), math.rad(roll))
+end
+
+-------------------------------------------------------------------------------------
+-- Conversion (power-user)
 -------------------------------------------------------------------------------------
 
 --- Returns 9 rotation matrix components (row-major: R00,R01,R02, R10,R11,R12, R20,R21,R22).
@@ -158,7 +298,7 @@ function Quaternion:toMatrix()
 end
 
 --- Convert rotation matrix components to Euler angles (degrees).
---- Static utility — takes 9 matrix components, not a quaternion.
+--- Static utility — takes 9 matrix components, not a quaternion. Prefer q:toEuler() instead.
 function Quaternion.matrixToEuler(m11, m12, m13, m21, m22, m23, m31, m32, m33)
     local y = math.asin(clamp(m13, -1, 1))
     local x, z

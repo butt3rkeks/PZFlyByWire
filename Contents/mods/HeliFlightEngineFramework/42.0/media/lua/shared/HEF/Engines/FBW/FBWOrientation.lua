@@ -88,25 +88,28 @@ function FBWOrientation.applyYaw(ay)
 end
 
 --- Get body-frame pitch from _tiltQuat (heading-independent).
---- @return number Pitch angle in radians (acos(R12) from tilt matrix)
+--- Uses tilt-only quaternion so pitch is independent of yaw.
+--- @return number Pitch angle in radians (acos of Y-axis Z component)
 function FBWOrientation.getBodyPitch()
-    local _, _, _, _, _, tr12, _, _, _ = _tiltQuat:toMatrixComponents()
-    return math.acos(clamp(tr12, -1, 1))
+    local _, _, ty = _tiltQuat:vectorY()
+    return math.acos(clamp(ty, -1, 1))
 end
 
 --- Get body-frame roll from _tiltQuat (heading-independent).
---- @return number Roll angle in radians (acos(R10) from tilt matrix)
+--- Uses tilt-only quaternion so roll is independent of yaw.
+--- @return number Roll angle in radians (acos of Y-axis X component)
 function FBWOrientation.getBodyRoll()
-    local _, _, _, tr10, _, _, _, _, _ = _tiltQuat:toMatrixComponents()
-    return math.acos(clamp(tr10, -1, 1))
+    local tx, _, _ = _tiltQuat:vectorY()
+    return math.acos(clamp(tx, -1, 1))
 end
 
 --- Get forward direction from full composed orientation.
 --- @return number fwdPzX, number fwdPzY Forward direction in PZ world space
 function FBWOrientation.getForward()
     local fullQ = composeOrientation()
-    local r00, r01, r02, r10, r11, r12, r20, r21, r22 = fullQ:toMatrixComponents()
-    return r02, r22
+    local _, _, fwdX = fullQ:vectorX()
+    local _, _, fwdZ = fullQ:vectorZ()
+    return fwdX, fwdZ
 end
 
 --- Get current yaw in degrees.
@@ -124,8 +127,7 @@ end
 --- Convert full orientation to Euler angles for setAngles output.
 --- @return number exDeg, number eyDeg, number ezDeg Euler angles in degrees
 function FBWOrientation.toEuler()
-    local fullQ = composeOrientation()
-    return Quaternion.matrixToEuler(fullQ:toMatrixComponents())
+    return composeOrientation():toEuler()
 end
 
 --- Check if orientation has been initialized.
