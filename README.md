@@ -4,7 +4,9 @@ A pluggable flight engine framework for Project Zomboid helicopter mods (Build 4
 
 ## What It Does
 
-The UH-1B Helicopter mod's flight system requires the `-debug` flag because it uses Java reflection APIs gated behind debug mode. HEF replaces the debug-dependent movement system with Bullet physics forces, enabling helicopter flight on dedicated servers without debug mode.
+The WarThunder Vehicle Library's helicopter flight system requires the `-debug` flag because it uses Java reflection APIs gated behind debug mode. HEF replaces the debug-dependent movement system with Bullet physics forces, enabling helicopter flight on dedicated servers without debug mode.
+
+Works with any WTVL helicopter, including the [UH-1B Helicopter](https://steamcommunity.com/sharedfiles/filedetails/?id=3409723807).
 
 ## Features
 
@@ -22,13 +24,13 @@ Subscribe on Steam Workshop, or copy the mod folder to your PZ mods directory.
 **Load order:**
 
 1. WarThunder Vehicle Library
-2. UH-1B Helicopter
+2. A WTVL helicopter mod (e.g., UH-1B Helicopter)
 3. **Helicopter Flight Engine Framework** (this mod)
 
 ### Requirements
 
-- [UH-1B Helicopter](https://steamcommunity.com/sharedfiles/filedetails/?id=3409723807)
-- WarThunder Vehicle Library (required by UH-1B)
+- [WarThunder Vehicle Library](https://steamcommunity.com/workshop/filedetails/?id=3399660368) (provides `GetHeliType`, `HeliList`, vehicle scripts)
+- At least one WTVL helicopter mod
 
 ### Replaces
 
