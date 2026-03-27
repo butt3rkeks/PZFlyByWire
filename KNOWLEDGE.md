@@ -325,7 +325,7 @@ for the current session, but the sandbox default is restored on game restart.
 
 ## Module Responsibilities
 
-### Models/ — Shared OOP data structures (`shared/HEF/Models/`)
+### Core/Models/ — Shared OOP data structures (`shared/HEF/Core/Models/`)
 
 **`Quaternion.lua`** — Metatable-based quaternion class
 - `new()`, `identity()`, `fromAxisAngle()`, `fromEuler()`
@@ -379,27 +379,51 @@ All type classes have EmmyLua annotations for IDE autocompletion. `HEF` prefix d
 - References type contracts: HEFContext, HEFCorrectionCtx, result classes
 - **Changes when**: interface contract changes (new method or ctx field)
 
+### Core/Toolkit/ — Optional building blocks (`shared/HEF/Core/Toolkit/`)
+
+Reusable utilities for engine authors. Not required — engines can use raw math instead.
+
+**`CoordUtil.lua`** — PZ coordinate system helpers
+- `pzToStandard(x,y,z)` / `standardToPz(x,y,z)` — Y/Z swap
+- `msToKmh(v)` / `kmhToMs(v)` — unit conversions
+
+**`VelocityUtil.lua`** — Speed decomposition
+- `horizontalSpeed(vx,vz)`, `totalSpeed(vx,vy,vz)`, `horizontalAngle(vx,vz)`, `decompose(vx,vy,vz)`
+
+**`PDController.lua`** — Stateless PD controller
+- `compute(err, errRate, Kp, Kd)`, `computeSaturated(...)` with tanh, `compute2DSaturated(...)`
+
+**`SimModel2D.lua`** — Instance-based 2D sim (position + velocity with inertia)
+- `new(targetFps)`, `:advance(desVx, desVz, dt, inertia)`, `:snapPosition(x,z)`, `:blendToward(x,z,blend)`, `:getState()`
+
+**`ErrorTracker2D.lua`** — Instance-based ring buffer error tracker
+- `new(historySize, lookback)`, `:record(actualX, actualZ, desiredX, desiredZ)`, `:getError(maxError)`, `:clearHistory()`
+
+**`VerticalModel.lua`** — Default helicopter vertical behavior
+- `computeTarget(keys, velY, curr_z, fuelPercent, engineCondition, freeMode, cfg)` → targetVelY, gravComp, vBraking, engineDead
+
+**`GroundModel.lua`** — Default ground hold + liftoff
+- `update(ctx, cfg)` → HEFGroundResult
+
 ### Engines/FBW/ — Fly-by-wire engine (`shared/HEF/Engines/FBW/`)
 
 **`FBWEngine.lua`** — Facade implementing IFlightEngine
 - `update(ctx:HEFCtx)` → HEFUpdateResult (horizontal + vertical + rotation)
-- `updateGround(ctx:HEFCtx)` → HEFGroundResult
+- `updateGround(ctx:HEFCtx)` → delegates to Toolkit/GroundModel
 - `applyCorrectionForces(cctx:HEFCorrectionCtx)` — optional 0-frame delay path
 - Lifecycle, tunables, sandbox options, debug state, commands
 - Registers with deferred fallback: immediate if IFlightEngine loaded, else OnGameStart
-- Uses ctx fields for position, velocity, mass, subSteps, blocked (no direct game API reads per-frame)
+- Uses Toolkit instances: `SimModel2D` for sim, `ErrorTracker2D` for error tracking
 - **Changes when**: FBW orchestration flow changes
 
 **`FBWOrientation.lua`** — Quaternion-state yaw/tilt (uses Models/Quaternion)
 **`FBWFilters.lua`** — Composable filter pipeline (stateless)
-**`FBWRawSim.lua`** — Simulation advance (position + velocity)
-**`FBWErrorTracker.lua`** — History buffer + tanh error saturation
 **`FBWForceComputer.lua`** — PD correction + thrust force math
 **`FBWYawController.lua`** — Yaw MPC (simYaw tracking + re-anchor)
 **`FBWInputProcessor.lua`** — Key → rotation deltas (uses ctx.blocked, not HeliTerrainUtil)
-**`FBWFlightModel.lua`** — Vertical flight behavior (receives velY from caller, no adapter calls)
+**`FBWFlightModel.lua`** — Thin wrapper around Toolkit/VerticalModel (extracts vehicle state, passes config)
 
-### Util/ — Foundational utilities + config (`shared/HEF/Util/`)
+### Core/Util/ — Foundational utilities + config (`shared/HEF/Core/Util/`)
 
 **`HeliUtil.lua`** — Shared utilities
 - `toLuaNum(v)`, `normalizeAngle(angle)`
@@ -425,7 +449,7 @@ All type classes have EmmyLua annotations for IDE autocompletion. `HEF` prefix d
 - Per-frame isBlocked cache (`invalidateBlockedCache()`) — eliminates redundant 132-square scans
 - **Changes when**: PZ changes flag names or grid square API
 
-### Adapters/ — Bullet physics I/O (`shared/HEF/Adapters/`)
+### Core/Adapters/ — Bullet physics I/O (`shared/HEF/Core/Adapters/`)
 
 **`HeliForceAdapter.lua`** — Force output + sub-steps
 - `applyForceImmediate(vehicle, fx, fy, fz)` — Y/Z swap + applyImpulseGeneric
@@ -503,29 +527,36 @@ HeliFlightEngineFramework/          ← project root (KNOWLEDGE.md, README.md, w
               HEFSandboxOptions.lua    ← @class + new() (includes HEFSandboxOption)
               HEFCommand.lua           ← @class + new()
               HEFEngineInfo.lua        ← @class + new()
-              Models/
-                Quaternion.lua         ← OOP quaternion (shared by all engines)
-                RotationMatrix.lua     ← OOP 3x3 matrix with PZ semantic accessors
-              Util/
-                HeliUtil.lua
-                HeliConfig.lua         ← + getEngineName() engine selector
-                HeliCompat.lua
-                HeliTerrainUtil.lua
+              Core/                    ← loads before Engines/ (C < E), guarantees globals
+                Adapters/
+                  HeliForceAdapter.lua
+                  HeliVelocityAdapter.lua
+                Models/
+                  Quaternion.lua       ← OOP quaternion with convenience methods
+                  RotationMatrix.lua   ← OOP 3x3 matrix with PZ semantic accessors
+                Toolkit/               ← optional building blocks for engine authors
+                  CoordUtil.lua        ← PZ Y/Z swap helpers, unit conversions
+                  ErrorTracker2D.lua   ← ring buffer error tracking with derivative
+                  GroundModel.lua      ← default ground hold + liftoff
+                  PDController.lua     ← stateless PD with tanh saturation
+                  SimModel2D.lua       ← 2D position/velocity sim with inertia
+                  VelocityUtil.lua     ← speed decomposition helpers
+                  VerticalModel.lua    ← default W/S/hover/fall vertical model
+                Util/
+                  HeliUtil.lua
+                  HeliConfig.lua       ← + getEngineName() engine selector
+                  HeliCompat.lua
+                  HeliTerrainUtil.lua
               Engines/
                 IFlightEngine.lua      ← interface + registry (REQUIRED + OPTIONAL methods)
                 FBW/
                   FBWEngine.lua        ← facade implementing IFlightEngine
                   FBWOrientation.lua   ← uses Models/Quaternion
                   FBWFilters.lua
-                  FBWRawSim.lua
-                  FBWErrorTracker.lua
+                  FBWFlightModel.lua   ← thin wrapper around Toolkit/VerticalModel
                   FBWForceComputer.lua
                   FBWYawController.lua
                   FBWInputProcessor.lua
-                  FBWFlightModel.lua
-              Adapters/
-                HeliForceAdapter.lua
-                HeliVelocityAdapter.lua
             Translate/EN/
               Sandbox_EN.txt
           client/
@@ -544,25 +575,41 @@ HeliFlightEngineFramework/          ← project root (KNOWLEDGE.md, README.md, w
 
 ### Load Order
 
-PZ loads `shared/` before `client/`, directories recursively. With subdirectories,
-exact traversal order is filesystem-dependent. To eliminate all load-order concerns:
-**no file-scope cross-module refs** — access globals inside function bodies only.
+PZ loads `shared/` before `client/`, directories alphabetically depth-first.
+Framework infrastructure is in `Core/` (C) which loads before `Engines/` (E),
+guaranteeing all framework globals exist when engine files load. This holds
+regardless of engine directory names.
 
-All cross-module references are inside function bodies (called after all files load).
-PZ completes all file loading before the game loop starts any ticks.
+Within Core/:  Adapters (A) < Models (M) < Toolkit (T) < Util (U).
+No file-scope cross-module references within Core/ — all globals accessed in function bodies.
 
 **FBWEngine registration**: `IFlightEngine.register("FBW", FBWEngine)` is the only
-file-scope cross-module call. Guarded: if `IFlightEngine` exists, registers immediately;
-otherwise defers to `Events.OnGameStart` (all files loaded before events fire).
+file-scope cross-module call in Engines/. Guarded: if `IFlightEngine` exists, registers
+immediately; otherwise defers to `Events.OnGameStart` (all files loaded before events fire).
+
+**FBWEngine toolkit instances**: `SimModel2D.new()` and `ErrorTracker2D.new()` at file scope
+are safe because Core/Toolkit/ loads before Engines/FBW/.
 
 ### Dependency Graph (layered, no cycles)
 
 ```
-  ┌── Models/ ──────────────────────┐
+  ┌── Core/Adapters/ ──────────────┐
+  │ HeliForceAdapter                │ (Bullet I/O)
+  │ HeliVelocityAdapter             │
+  └─────────────────────────────────┘
+                  │
+  ┌── Core/Models/ ────────────────┐
   │ Quaternion, RotationMatrix      │ (shared by all engines)
   └─────────────────────────────────┘
                   │
-  ┌── Util/ ────────────────────────┐
+  ┌── Core/Toolkit/ ───────────────┐
+  │ CoordUtil, VelocityUtil,        │ (optional building blocks)
+  │ PDController, SimModel2D,       │
+  │ ErrorTracker2D, VerticalModel,  │
+  │ GroundModel                     │
+  └─────────────────────────────────┘
+                  │
+  ┌── Core/Util/ ──────────────────┐
   │ HeliUtil, HeliConfig,           │
   │ HeliCompat, HeliTerrainUtil     │
   └─────────────────────────────────┘
@@ -581,15 +628,9 @@ otherwise defers to `Events.OnGameStart` (all files loaded before events fire).
                   │
   ┌── Engines/FBW/ ─────────────────┐
   │ FBWEngine (facade)              │ → registers with IFlightEngine
-  │ FBWOrientation, FBWFilters,     │
-  │ FBWRawSim, FBWErrorTracker,     │
+  │ FBWOrientation, FBWFilters,     │ → uses Core/Models, Core/Toolkit
   │ FBWForceComputer, FBWYawCtrl,   │
   │ FBWInputProcessor, FBWFlightMdl │
-  └─────────────────────────────────┘
-                  │
-  ┌── Adapters/ (Bullet I/O) ──────┐
-  │ HeliForceAdapter                │
-  │ HeliVelocityAdapter             │
   └─────────────────────────────────┘
                   │
   ┌── HeliSimService (dispatcher) ──┐
@@ -661,7 +702,7 @@ Ground and engine-off paths set `_flightState = inactive` (triggers re-init next
 | FBW rotation feel / key mappings | FBWInputProcessor only | Engines/FBW/ |
 | FBW quaternion math | FBWOrientation (uses Models/Quaternion) | Engines/FBW/ |
 | FBW add filter (turbulence) | FBWFilters + FBWEngine (add stage) | Engines/FBW/ |
-| FBW swap sim model | FBWRawSim only | Engines/FBW/ |
+| FBW swap sim model | SimModel2D instance in FBWEngine | Engines/FBW/ + Core/Toolkit/ |
 | Shared quaternion math | Quaternion.lua or RotationMatrix.lua | Models/ |
 | PZ exposes velocity setter | HeliVelocityAdapter + HEFContext builder | Adapters/ + HEF/ |
 | Force application changes | HeliForceAdapter only | Adapters/ |

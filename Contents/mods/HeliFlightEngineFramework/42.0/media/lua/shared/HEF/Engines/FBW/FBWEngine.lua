@@ -22,6 +22,12 @@ local _prevPosX = nil
 local _prevPosZ = nil
 
 -------------------------------------------------------------------------------------
+-- Toolkit instances (Core/ loads before Engines/, so globals are available)
+-------------------------------------------------------------------------------------
+local _sim = SimModel2D.new(HeliConfig.TARGET_FPS)
+local _errorTracker = ErrorTracker2D.new(HeliConfig.HISTORY_SIZE, 5)
+
+-------------------------------------------------------------------------------------
 -- IFlightEngine: Metadata
 -------------------------------------------------------------------------------------
 
@@ -44,8 +50,8 @@ function FBWEngine.resetFlightState()
 
     FBWOrientation.reset()
     FBWYawController.reset()
-    FBWRawSim.reset(0, 0)
-    FBWErrorTracker.reset()
+    _sim:reset(0, 0)
+    _errorTracker:reset()
     HeliForceAdapter.resetPhysicsTime()
     HeliVelocityAdapter.resetSmoothing()
 end
@@ -56,7 +62,7 @@ function FBWEngine.initFlight(vehicle)
     if posX == nil or posZ == nil then return end
     local px = HeliUtil.toLuaNum(posX)
     local pz = HeliUtil.toLuaNum(posZ)
-    FBWRawSim.reset(px, pz)
+    _sim:reset(px, pz)
     _simInitialized = true
 end
 
@@ -182,8 +188,8 @@ function FBWEngine.update(ctx)
     end
 
     if freeMode and noInput then
-        local _, _, svx, svz = FBWRawSim.getState()
-        local actualSpeed = math.sqrt(ctx.velX * ctx.velX + ctx.velZ * ctx.velZ)
+        local _, _, svx, svz = _sim:getState()
+        local actualSpeed = VelocityUtil.horizontalSpeed(ctx.velX, ctx.velZ)
         if actualSpeed < HeliConfig.FA_OFF_DEADZONE then
             desiredHX, desiredHZ = 0, 0
             FBWEngine.initFlight(vehicle)
@@ -204,14 +210,14 @@ function FBWEngine.update(ctx)
     local baseBrake = HeliConfig.get("brake")
     local effectiveInertia = baseBrake * (hasHInput and HeliConfig.get("accel") or HeliConfig.get("decel"))
 
-    -- 12. FBWRawSim.advance
-    FBWRawSim.advance(desiredHX, desiredHZ, dt, effectiveInertia)
+    -- 12. Sim model advance
+    _sim:advance(desiredHX, desiredHZ, dt, effectiveInertia)
 
     -- 13. Heading re-anchor check (skip in FA-off — coast must survive turns)
     if not _flightAssistOff then
         if FBWYawController.checkHeadingReanchor(fps) then
-            FBWRawSim.snapPosition(posX, posZ)
-            FBWErrorTracker.clearHistory()
+            _sim:snapPosition(posX, posZ)
+            _errorTracker:clearHistory()
         end
     end
 
@@ -219,12 +225,12 @@ function FBWEngine.update(ctx)
     local posDeltaSpeed = HeliVelocityAdapter.getPositionDeltaSpeed()
     local desiredMag = math.sqrt(desiredHX * desiredHX + desiredHZ * desiredHZ)
     if desiredMag < HeliConfig.SIM_SNAP_THRESHOLD and not hasHInput and posDeltaSpeed < HeliConfig.SIM_SNAP_THRESHOLD then
-        FBWRawSim.blendToward(posX, posZ, HeliConfig.SIM_BLEND_RATE)
+        _sim:blendToward(posX, posZ, HeliConfig.SIM_BLEND_RATE)
     end
 
     -- 15. Record in error tracker
-    local simPosX, simPosZ, simVelX, simVelZ = FBWRawSim.getState()
-    FBWErrorTracker.record(posX, posZ, simPosX, simPosZ)
+    local simPosX, simPosZ, simVelX, simVelZ = _sim:getState()
+    _errorTracker:record(posX, posZ, simPosX, simPosZ)
 
     -- 16. Velocity from framework ctx (read once per frame by HeliMove)
     local velX = ctx.velX
@@ -243,9 +249,9 @@ function FBWEngine.update(ctx)
     end
 
     -- 18. Dual-path activation
-    local errX, errZ, errRateX, errRateZ = FBWErrorTracker.getPositionError()
+    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.get("maxerr"))
     local errMag = math.sqrt(errX * errX + errZ * errZ)
-    local hSpeedActual = math.sqrt(velX * velX + velZ * velZ)
+    local hSpeedActual = VelocityUtil.horizontalSpeed(velX, velZ)
     local dualPathActive = FBWEngine.isWarmedUp() and
         (hasHInput or errMag > HeliConfig.DUAL_PATH_ERROR_THRESHOLD or hSpeedActual > HeliConfig.DUAL_PATH_SPEED_THRESHOLD)
 
@@ -260,7 +266,7 @@ function FBWEngine.update(ctx)
     end
 
     -- 20. Display speed from sim velocity
-    local displaySpeed = math.sqrt(simVelX * simVelX + simVelZ * simVelZ) * 3.6  -- m/s → km/h
+    local displaySpeed = CoordUtil.msToKmh(VelocityUtil.horizontalSpeed(simVelX, simVelZ))
 
     -- 21. Return results
     return {
@@ -293,40 +299,13 @@ end
 --- @param ctx HEFCtx
 --- @return HEFGroundResult
 function FBWEngine.updateGround(ctx)
-    local vehicle = ctx.vehicle
-    local keys = ctx.keys
-    local mass = ctx.mass
-    local velX = ctx.velX
-    local velY = ctx.velY
-    local velZ = ctx.velZ
-    local groundVelMag = math.abs(velX) + math.abs(velY) + math.abs(velZ)
-
-    local liftoff = false
-
-    if keys.w and vehicle:getRemainingFuelPercentage() > 0 then
-        vehicle:setPhysicsActive(true)
-        local ascendSpeed = HeliConfig.get("ascend")
-        local gravity = HeliConfig.get("gravity")
-        if ctx.subSteps > 0 then
-            local Kp = HeliConfig.get("kp")
-            local liftFy = Kp * (ascendSpeed - velY) * mass * ctx.subSteps + mass * gravity * ctx.subSteps
-            HeliForceAdapter.applyForceImmediate(vehicle,
-                -velX * mass * HeliConfig.GROUND_VELOCITY_KILL,
-                liftFy,
-                -velZ * mass * HeliConfig.GROUND_VELOCITY_KILL)
-        end
-        liftoff = true
-    elseif groundVelMag > HeliConfig.GROUND_VELOCITY_THRESHOLD then
-        HeliForceAdapter.applyForceImmediate(vehicle,
-            -velX * mass * HeliConfig.GROUND_VELOCITY_KILL,
-            -velY * mass * HeliConfig.GROUND_VELOCITY_KILL,
-            -velZ * mass * HeliConfig.GROUND_VELOCITY_KILL)
-    end
-
-    return {
-        liftoff = liftoff,
-        displaySpeed = 0,
-    }
+    return GroundModel.update(ctx, {
+        velocityKillFactor = HeliConfig.GROUND_VELOCITY_KILL,
+        velocityThreshold  = HeliConfig.GROUND_VELOCITY_THRESHOLD,
+        ascendSpeed        = HeliConfig.get("ascend"),
+        gravity            = HeliConfig.get("gravity"),
+        kp                 = HeliConfig.get("kp"),
+    })
 end
 
 -------------------------------------------------------------------------------------
@@ -334,7 +313,7 @@ end
 -------------------------------------------------------------------------------------
 --- @param cctx HEFCorrectionCtx
 function FBWEngine.applyCorrectionForces(cctx)
-    local errX, errZ, errRateX, errRateZ = FBWErrorTracker.getPositionError()
+    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.get("maxerr"))
     local errMag = math.sqrt(errX * errX + errZ * errZ)
 
     local fx, fz = FBWForceComputer.computeCorrectionForce(
@@ -419,8 +398,8 @@ function FBWEngine.getDebugColumns()
 end
 
 function FBWEngine.getDebugState()
-    local simPosX, simPosZ, simVelX, simVelZ = FBWRawSim.getState()
-    local errX, errZ, errRateX, errRateZ = FBWErrorTracker.getPositionError()
+    local simPosX, simPosZ, simVelX, simVelZ = _sim:getState()
+    local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.get("maxerr"))
     return {
         simPosX = simPosX, simPosZ = simPosZ,
         simVelX = simVelX, simVelZ = simVelZ,

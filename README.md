@@ -154,12 +154,21 @@ shared/HEF/
   HEFContext.lua              — per-frame context (HEFCtx) builder + contract
   HEFCorrectionCtx.lua        — correction-phase context builder + contract
   HEF*Result.lua, HEF*.lua    — typed return contracts (8 type files)
-  Models/                      — Quaternion, RotationMatrix (shared OOP)
-  Util/                        — HeliConfig, HeliUtil, HeliCompat, HeliTerrainUtil
+  Core/                        — loads before Engines/ (C < E alphabetically)
+    Adapters/                  — HeliForceAdapter, HeliVelocityAdapter
+    Models/                    — Quaternion, RotationMatrix (shared OOP)
+    Toolkit/                   — optional building blocks for engine authors
+      CoordUtil.lua            — PZ Y/Z swap, unit conversions
+      VelocityUtil.lua         — speed decomposition helpers
+      PDController.lua         — stateless PD with tanh saturation
+      SimModel2D.lua           — 2D position/velocity sim (instance-based)
+      ErrorTracker2D.lua       — ring buffer error tracking (instance-based)
+      VerticalModel.lua        — default W/S/hover/fall vertical model
+      GroundModel.lua          — default ground hold + liftoff
+    Util/                      — HeliConfig, HeliUtil, HeliCompat, HeliTerrainUtil
   Engines/
     IFlightEngine.lua          — interface + registry
-    FBW/                       — fly-by-wire engine (9 files)
-  Adapters/                    — HeliForceAdapter, HeliVelocityAdapter
+    FBW/                       — fly-by-wire engine (7 files, uses Core/Toolkit)
 
 client/HeliAbility/
   HeliSimService.lua           — thin dispatcher (delegates to active engine)
