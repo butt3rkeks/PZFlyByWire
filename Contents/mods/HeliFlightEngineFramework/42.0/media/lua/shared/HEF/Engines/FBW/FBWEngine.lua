@@ -22,10 +22,10 @@ local _prevPosX = nil
 local _prevPosZ = nil
 
 -------------------------------------------------------------------------------------
--- Toolkit instances (lazy-init on first resetFlightState, then reused)
+-- Toolkit instances (Core/ loads before Engines/, so globals are available)
 -------------------------------------------------------------------------------------
-local _sim = nil
-local _errorTracker = nil
+local _sim = SimModel2D.new(HeliConfig.TARGET_FPS)
+local _errorTracker = ErrorTracker2D.new(HeliConfig.HISTORY_SIZE, 5)
 
 -------------------------------------------------------------------------------------
 -- IFlightEngine: Metadata
@@ -50,12 +50,6 @@ function FBWEngine.resetFlightState()
 
     FBWOrientation.reset()
     FBWYawController.reset()
-    if not _sim then
-        _sim = SimModel2D.new(HeliConfig.TARGET_FPS)
-    end
-    if not _errorTracker then
-        _errorTracker = ErrorTracker2D.new(HeliConfig.HISTORY_SIZE, 5)
-    end
     _sim:reset(0, 0)
     _errorTracker:reset()
     HeliForceAdapter.resetPhysicsTime()
