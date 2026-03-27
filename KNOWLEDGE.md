@@ -315,7 +315,7 @@ for the current session, but the sandbox default is restored on game restart.
 |----------------------|-----------------|---------|-------------|
 | GravityEstimate | gravity | 9.80 | Gravity compensation estimate |
 | ResponsivenessGain | kp | 8.0 | Vertical PD gain |
-| MaxHorizontalSpeed | hspeed | 450 | Max horizontal speed (m/s at max tilt) |
+| MaxHorizontalSpeed | hspeed | 90 | Max horizontal speed (m/s at max tilt) |
 | AscendSpeed | ascend | 8.0 | Ascend speed (Bullet Y/s) |
 | DescendSpeed | descend | 14.0 | Descend speed |
 | GravityFallSpeed | fall | 24.5 | Engine-off fall speed |

@@ -29,7 +29,7 @@ local PARAMS = {
     descend     = { field = "DescendSpeed",        default = 14.0,  min = 1.0,   max = 25.0,   desc = "Descend speed (Bullet Y/s)" },
     fall        = { field = "GravityFallSpeed",    default = 24.5,  min = 2.0,   max = 50.0,   desc = "Engine-off fall (Bullet Y/s)" },
     deadfall    = { field = "EngineDeadFallSpeed",  default = 35.0,  min = 3.0,   max = 60.0,   desc = "Engine-dead fall (Bullet Y/s)" },
-    hspeed      = { field = "MaxHorizontalSpeed",  default = 450.0, min = 10.0,  max = 1000.0, desc = "Max horizontal speed (m/s)" },
+    hspeed      = { field = "MaxHorizontalSpeed",  default = 90.0,  min = 10.0,  max = 1000.0, desc = "Max horizontal speed (m/s)" },
 
     -- Runtime-only (session overrides, from /hef commands)
     pgain       = { default = 7.0,   min = 0.1,  max = 50.0, desc = "Horizontal position error P gain" },

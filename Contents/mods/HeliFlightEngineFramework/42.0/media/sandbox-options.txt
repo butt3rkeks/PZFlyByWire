@@ -51,7 +51,7 @@ option FBW.ResponsivenessGain
 
 option FBW.MaxHorizontalSpeed
 {
-    type = double, min = 10.0, max = 1000.0, default = 450.0,
+    type = double, min = 10.0, max = 1000.0, default = 90.0,
     page = FBW,
     translation = FBW_MaxHorizontalSpeed,
 }
@@ -61,4 +61,18 @@ option FBW.BrakingMultiplier
     type = double, min = 0.01, max = 1.0, default = 0.05,
     page = FBW,
     translation = FBW_BrakingMultiplier,
+}
+
+option FBW.AccelMultiplier
+{
+    type = double, min = 0.1, max = 10.0, default = 1.5,
+    page = FBW,
+    translation = FBW_AccelMultiplier,
+}
+
+option FBW.DecelMultiplier
+{
+    type = double, min = 0.1, max = 10.0, default = 2.25,
+    page = FBW,
+    translation = FBW_DecelMultiplier,
 }

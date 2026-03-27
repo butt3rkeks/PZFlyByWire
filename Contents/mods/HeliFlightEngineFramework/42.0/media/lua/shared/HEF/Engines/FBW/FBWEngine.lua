@@ -330,25 +330,29 @@ end
 -- IFlightEngine: Tunables (runtime, session-only via HeliConfig)
 -------------------------------------------------------------------------------------
 
-local TUNABLE_DEFS = {
-    { name = "pgain",    label = "P Gain",        default = 7.0,  min = 0.1, max = 50.0 },
-    { name = "dgain",    label = "D Gain",        default = 0.3,  min = 0.0, max = 5.0 },
-    { name = "maxerr",   label = "Max Error",     default = 10.0, min = 1.0, max = 100.0 },
-    { name = "fstopgain", label = "Stop Gain",    default = 0.3,  min = 0.0, max = 2.0 },
-    { name = "yawgain",  label = "Yaw Gain",      default = 0.9,  min = 0.0, max = 1.0 },
-    { name = "autolevel", label = "Auto-Level",   default = 1.0,  min = 0.1, max = 5.0 },
+-- Tunables: only store the name→label mapping. All other metadata (default, min, max)
+-- comes from HeliConfig PARAMS — single source of truth.
+local TUNABLE_NAMES = {
+    { name = "pgain",     label = "P Gain" },
+    { name = "dgain",     label = "D Gain" },
+    { name = "maxerr",    label = "Max Error" },
+    { name = "fstopgain", label = "Stop Gain" },
+    { name = "yawgain",   label = "Yaw Gain" },
+    { name = "autolevel", label = "Auto-Level" },
 }
 
 function FBWEngine.getTunables()
+    local PARAMS = HeliConfig.getParamDefs()
     local result = {}
-    for _, def in ipairs(TUNABLE_DEFS) do
+    for _, t in ipairs(TUNABLE_NAMES) do
+        local p = PARAMS[t.name]
         result[#result + 1] = {
-            name = def.name,
-            label = def.label,
-            value = HeliConfig.get(def.name),
-            min = def.min,
-            max = def.max,
-            default = def.default,
+            name = t.name,
+            label = t.label,
+            value = HeliConfig.get(t.name),
+            min = p and p.min or 0,
+            max = p and p.max or 100,
+            default = p and p.default or 0,
         }
     end
     return result
@@ -367,19 +371,17 @@ end
 -------------------------------------------------------------------------------------
 
 function FBWEngine.getSandboxOptions()
-    return {
-        namespace = "FBW",
-        options = {
-            { field = "GravityEstimate",    type = "double", default = 9.8,   min = 5.0,  max = 20.0,   desc = "Gravity estimate (Bullet units/s^2)" },
-            { field = "AscendSpeed",        type = "double", default = 8.0,   min = 1.0,  max = 30.0,   desc = "Ascend speed (Bullet Y/s)" },
-            { field = "DescendSpeed",       type = "double", default = 14.0,  min = 1.0,  max = 25.0,   desc = "Descend speed (Bullet Y/s)" },
-            { field = "GravityFallSpeed",   type = "double", default = 24.5,  min = 2.0,  max = 50.0,   desc = "Engine-off fall speed (Bullet Y/s)" },
-            { field = "EngineDeadFallSpeed", type = "double", default = 35.0,  min = 3.0,  max = 60.0,   desc = "Engine-dead fall speed (Bullet Y/s)" },
-            { field = "ResponsivenessGain", type = "double", default = 8.0,   min = 1.0,  max = 20.0,   desc = "Vertical PD gain (responsiveness)" },
-            { field = "MaxHorizontalSpeed", type = "double", default = 450.0, min = 10.0, max = 1000.0, desc = "Max horizontal speed (m/s)" },
-            { field = "BrakingMultiplier",  type = "double", default = 0.05,  min = 0.01, max = 1.0,    desc = "Base inertia rate" },
-        },
-    }
+    local PARAMS = HeliConfig.getParamDefs()
+    local options = {}
+    for _, p in pairs(PARAMS) do
+        if p.field then
+            options[#options + 1] = {
+                field = p.field, type = "double",
+                default = p.default, min = p.min, max = p.max, desc = p.desc,
+            }
+        end
+    end
+    return { namespace = "FBW", options = options }
 end
 
 -------------------------------------------------------------------------------------
