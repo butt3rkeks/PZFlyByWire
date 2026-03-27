@@ -374,7 +374,7 @@ function FBWEngine.getSandboxOptions()
     local PARAMS = HeliConfig.getParamDefs()
     local options = {}
     for _, p in pairs(PARAMS) do
-        if p.field then
+        if p.field and p.ns == "FBW" then
             options[#options + 1] = {
                 field = p.field, type = "double",
                 default = p.default, min = p.min, max = p.max, desc = p.desc,
