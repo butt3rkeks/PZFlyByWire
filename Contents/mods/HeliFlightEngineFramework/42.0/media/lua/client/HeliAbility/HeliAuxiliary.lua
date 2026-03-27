@@ -15,22 +15,67 @@ HeliAuxiliary = {}
 local _lastLightSquare = nil
 local _light = nil
 
---- Toggle ghost mode based on altitude.
---- Above z=1: enable ghost mode (no zombie/ground collision).
---- At/below z=1: disable ghost mode.
---- @param playerObj IsoPlayer
+-------------------------------------------------------------------------------------
+-- Ghost mode occupant tracking
+--
+-- Tracks all players we've put into ghost mode so we can reliably clean them up
+-- even if they leave the vehicle unexpectedly (crash, disconnect, seat switch,
+-- kicked). Each frame we reconcile: current occupants get ghost mode applied,
+-- tracked players no longer in the vehicle get cleared.
+-------------------------------------------------------------------------------------
+local _ghostedPlayers = {}  -- { [IsoGameCharacter] = true }
+
+--- Clear ghost mode + Z on a single character and remove from tracking.
+--- @param character IsoGameCharacter
+local function clearOccupantFlightState(character)
+    if character:isGhostMode() and not character:isGodMod() then
+        character:setGhostMode(false)
+    end
+    character:setZ(0)
+    _ghostedPlayers[character] = nil
+end
+
+--- Apply ghost mode + Z-level to a single character and add to tracking.
+--- @param character IsoGameCharacter
+--- @param altitude number Current altitude (continuous Z from Bullet physics)
+local function setOccupantFlightState(character, altitude)
+    if not character:isGhostMode() then
+        character:setGhostMode(true)
+    end
+    character:setZ(altitude)
+    _ghostedPlayers[character] = true
+end
+
+--- Update ghost mode and Z-level for all occupants based on altitude.
+--- Builds a set of current occupants, applies flight state to each.
+--- Then sweeps tracked players — anyone no longer in the vehicle gets cleared.
+--- Handles: normal exit, crash/disconnect, seat switch to non-heli vehicle.
+--- @param playerObj IsoPlayer The pilot (seat 0)
 --- @param currentAltitude number Current height in PZ Z-levels
-function HeliAuxiliary.updateGhostMode(playerObj, currentAltitude)
-    if currentAltitude > 1 then
-        if not playerObj:isGhostMode() then
-            playerObj:setGhostMode(true)
+--- @param vehicle BaseVehicle The helicopter
+function HeliAuxiliary.updateGhostMode(playerObj, currentAltitude, vehicle)
+    local airborne = currentAltitude > 1
+
+    -- Build set of current occupants
+    local currentOccupants = {}
+    local seatCount = vehicle:getScript():getPassengerCount()
+    for seat = 0, seatCount - 1 do
+        local occupant = vehicle:getCharacter(seat)
+        if occupant then
+            currentOccupants[occupant] = true
+            if airborne then
+                setOccupantFlightState(occupant, currentAltitude)
+            else
+                clearOccupantFlightState(occupant)
+            end
         end
-        playerObj:setZ(currentAltitude)
-    else
-        if playerObj:isGhostMode() then
-            playerObj:setGhostMode(false)
+    end
+
+    -- Sweep: clear anyone we ghosted who is no longer in the vehicle
+    for player, _ in pairs(_ghostedPlayers) do
+        if not currentOccupants[player] then
+            clearOccupantFlightState(player)
         end
-        playerObj:setZ(0)
     end
 end
 
@@ -106,11 +151,17 @@ function HeliAuxiliary.applyWallDamage(vehicle)
     end
 end
 
---- Cleanup when player exits helicopter.
---- Disables ghost mode if it was enabled during flight.
---- @param player IsoPlayer
+--- Cleanup when pilot exits or flight ends.
+--- Clears ghost mode + Z for all tracked occupants.
+--- @param player IsoPlayer The pilot exiting (also cleared directly as safety net)
 function HeliAuxiliary.cleanup(player)
+    -- Clear all tracked occupants (includes pilot if tracked)
+    for character, _ in pairs(_ghostedPlayers) do
+        clearOccupantFlightState(character)
+    end
+    -- Safety net: ensure pilot is cleared even if not in tracking table
     if player:isGhostMode() and not player:isGodMod() then
         player:setGhostMode(false)
     end
+    player:setZ(0)
 end

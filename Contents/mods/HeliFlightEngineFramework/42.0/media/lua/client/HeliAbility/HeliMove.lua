@@ -70,6 +70,10 @@ local function helicopterMovementUpdate()
     if not playerObj then return end
     local vehicle = playerObj:getVehicle()
     if not checkValid(playerObj, vehicle) then
+        if _flightState ~= STATE_INACTIVE then
+            -- Was flying, now invalid (seat switch, exit, etc.) — clear ghost mode
+            HeliAuxiliary.cleanup(playerObj)
+        end
         _flightState = STATE_INACTIVE
         _dualPathActive = false
         return
@@ -100,8 +104,8 @@ local function helicopterMovementUpdate()
     local fpsMultiplier = ctx.fpsMultiplier
     local heliType = ctx.heliType
 
-    -- Ghost mode
-    HeliAuxiliary.updateGhostMode(playerObj, currentAltitude)
+    -- Ghost mode + Z-level for all occupants
+    HeliAuxiliary.updateGhostMode(playerObj, currentAltitude, vehicle)
 
     -- Warmup: re-anchor sim to actual position each frame until physics stabilizes.
     if _flightState == STATE_WARMUP then
@@ -287,17 +291,25 @@ end
 local function helicopterExit(player)
     local vehicle = player:getVehicle()
     if vehicle == nil then return end
-    local seat = vehicle:getSeat(player)
-    if seat ~= 0 then return end
     if not GetHeliType(vehicle) then return end
 
-    if HeliDebug.isRecording() then
-        HeliDebug.stopRecording()
+    -- Any occupant exiting: clear their ghost mode + Z
+    if player:isGhostMode() and not player:isGodMod() then
+        player:setGhostMode(false)
     end
-    HeliAuxiliary.cleanup(player)
-    for _, fn in ipairs(_cleanupCallbacks) do fn(player, vehicle) end
-    _dualPathActive = false
-    _flightState = STATE_INACTIVE
+    player:setZ(0)
+
+    -- Pilot-only cleanup: flight state, debug, callbacks
+    local seat = vehicle:getSeat(player)
+    if seat == 0 then
+        if HeliDebug.isRecording() then
+            HeliDebug.stopRecording()
+        end
+        HeliAuxiliary.cleanup(player)
+        for _, fn in ipairs(_cleanupCallbacks) do fn(player, vehicle) end
+        _dualPathActive = false
+        _flightState = STATE_INACTIVE
+    end
 end
 
 -------------------------------------------------------------------------------------
