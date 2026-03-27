@@ -268,8 +268,10 @@ function FBWEngine.update(ctx)
         engineDead = engineDead,
         dualPathActive = dualPathActive,
         displaySpeed = displaySpeed,
-        -- Optional OUT (debug/telemetry)
-        ax = ax, ay = ay, az = az,
+        -- Framework-consumed (wall damage, telemetry)
+        isBlockedHit = isBlockedHit,
+        telemetrySpeed = ax + ay + az,
+        -- Debug / flight data recorder
         angleZ = angleZ, angleX = angleX,
         fwdX = fwdX, fwdZ = fwdZ,
         desiredVelX = desiredHX, desiredVelZ = desiredHZ,
@@ -282,7 +284,6 @@ function FBWEngine.update(ctx)
         hasHInput = hasHInput,
         freeMode = freeMode,
         noHInput = noInput,
-        isBlockedHit = isBlockedHit,
     }
 end
 
