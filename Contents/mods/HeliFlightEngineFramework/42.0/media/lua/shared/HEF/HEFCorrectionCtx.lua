@@ -22,6 +22,7 @@ HEFCorrectionCtx = {}
 --- @field mass number Vehicle mass (Lua number)
 --- @field velX number Smoothed horizontal velocity X (m/s, fresh post-physics read)
 --- @field velZ number Smoothed horizontal velocity Z (m/s, fresh post-physics read)
+--- @field applyForce fun(fx:number, fy:number, fz:number) Apply physics force (Bullet space, adapter-wrapped)
 
 -------------------------------------------------------------------------------------
 -- Runtime contract (mirrors EmmyLua above, used for validation)
@@ -54,5 +55,8 @@ function HEFCorrectionCtx.build(vehicle)
         mass = toLuaNum(vehicle:getMass()),
         velX = toLuaNum(vx),
         velZ = toLuaNum(vz),
+        applyForce = function(fx, fy, fz)
+            HeliForceAdapter.applyForceImmediate(vehicle, fx, fy, fz)
+        end,
     }
 end

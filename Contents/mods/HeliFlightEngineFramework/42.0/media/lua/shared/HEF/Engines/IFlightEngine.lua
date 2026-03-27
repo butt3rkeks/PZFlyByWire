@@ -12,10 +12,22 @@
       IFlightEngine.register("FBW", engineTable) — validates + stores
       IFlightEngine.get("FBW") — retrieves by name
 
-    Context contracts:
+    Context contracts (inputs):
       HEFContext.lua        — @class HEFCtx + CTX_FIELDS (OnTick phase)
       HEFCorrectionCtx.lua  — @class HEFCorrectionCtx + CTX_FIELDS (OnTickEvenPaused phase)
     Result contracts: see HEFUpdateResult.lua, HEFGroundResult.lua, etc.
+
+    Output contract (ctx closures — preferred over direct adapter/game API calls):
+      ctx.applyForce(fx, fy, fz)    — apply physics force (Bullet space, adapter-wrapped)
+      ctx.setAngles(x, y, z)        — set vehicle Euler angles (degrees)
+      ctx.setPhysicsActive(active)  — wake/sleep Bullet physics body
+      cctx.applyForce(fx, fy, fz)   — same as ctx.applyForce, for correction path
+
+    Engines receive all needed state via ctx fields (position, velocity, mass,
+    keys, terrain, fuel, engine condition, angles, physics timing) and should
+    write outputs via ctx closures. The vehicle object is still available in ctx
+    as an escape hatch for engine-specific state (e.g., modData), but engines
+    should not call adapters or physics APIs directly.
 ]]
 
 IFlightEngine = {}

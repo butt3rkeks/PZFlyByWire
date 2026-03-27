@@ -25,17 +25,10 @@ local function getVerticalCfg()
 end
 
 --- Compute vertical velocity target and gravity compensation flag.
---- @param vehicle BaseVehicle
---- @param curr_z number Current altitude (z-levels)
+--- @param ctx HEFCtx Framework context (provides keys, velY, curr_z, fuelPercent, engineCondition)
 --- @param freeMode boolean Flight assist off
---- @param keys HEFKeys Key state
---- @param velY number Current vertical velocity
 --- @return number targetVelY, boolean gravComp, boolean vBraking, boolean engineDead
-function FBWFlightModel.computeVerticalTarget(vehicle, curr_z, freeMode, keys, velY)
-    local engine = vehicle:getPartById("Engine")
-    local engineCondition = engine and engine:getCondition() or -1
-    local fuelPercent = vehicle:getRemainingFuelPercentage()
-
+function FBWFlightModel.computeVerticalTarget(ctx, freeMode)
     return VerticalModel.computeTarget(
-        keys, velY, curr_z, fuelPercent, engineCondition, freeMode, getVerticalCfg())
+        ctx.keys, ctx.velY, ctx.curr_z, ctx.fuelPercent, ctx.engineCondition, freeMode, getVerticalCfg())
 end

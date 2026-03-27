@@ -22,7 +22,6 @@ GroundModel = {}
 --- @param cfg GroundConfig Tuning parameters
 --- @return HEFGroundResult
 function GroundModel.update(ctx, cfg)
-    local vehicle = ctx.vehicle
     local keys = ctx.keys
     local mass = ctx.mass
     local velX, velY, velZ = ctx.velX, ctx.velY, ctx.velZ
@@ -30,19 +29,19 @@ function GroundModel.update(ctx, cfg)
 
     local liftoff = false
 
-    if keys.w and vehicle:getRemainingFuelPercentage() > 0 then
-        vehicle:setPhysicsActive(true)
+    if keys.w and ctx.fuelPercent > 0 then
+        ctx.setPhysicsActive(true)
         if ctx.subSteps > 0 then
             local liftFy = cfg.kp * (cfg.ascendSpeed - velY) * mass * ctx.subSteps
                          + mass * cfg.gravity * ctx.subSteps
-            HeliForceAdapter.applyForceImmediate(vehicle,
+            ctx.applyForce(
                 -velX * mass * cfg.velocityKillFactor,
                 liftFy,
                 -velZ * mass * cfg.velocityKillFactor)
         end
         liftoff = true
     elseif groundVelMag > cfg.velocityThreshold then
-        HeliForceAdapter.applyForceImmediate(vehicle,
+        ctx.applyForce(
             -velX * mass * cfg.velocityKillFactor,
             -velY * mass * cfg.velocityKillFactor,
             -velZ * mass * cfg.velocityKillFactor)

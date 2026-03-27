@@ -56,14 +56,18 @@ function FBWEngine.resetFlightState()
     HeliVelocityAdapter.resetSmoothing()
 end
 
+--- Internal: re-anchor sim model to a known position.
+--- Used by initFlight (framework API) and internally during update().
+local function _reinitSim(posX, posZ)
+    _sim:reset(posX, posZ)
+    _simInitialized = true
+end
+
 function FBWEngine.initFlight(vehicle)
     local posX = vehicle:getX()
     local posZ = vehicle:getY()
     if posX == nil or posZ == nil then return end
-    local px = HeliUtil.toLuaNum(posX)
-    local pz = HeliUtil.toLuaNum(posZ)
-    _sim:reset(px, pz)
-    _simInitialized = true
+    _reinitSim(HeliUtil.toLuaNum(posX), HeliUtil.toLuaNum(posZ))
 end
 
 function FBWEngine.tickWarmup()
@@ -90,16 +94,12 @@ function FBWEngine.update(ctx)
     local nowMaxZ = ctx.nowMaxZ
     local blocked = ctx.blocked
 
-    local toLuaNum = HeliUtil.toLuaNum
     local freeMode = vehicle:getModData().AutoBalance == true
     _flightAssistOff = freeMode
 
     -- 1. Init FBWOrientation from vehicle if not initialized
     if not FBWOrientation.isInitialized() then
-        FBWOrientation.initFromVehicle(
-            toLuaNum(vehicle:getAngleX()),
-            toLuaNum(vehicle:getAngleY()),
-            toLuaNum(vehicle:getAngleZ()))
+        FBWOrientation.initFromVehicle(ctx.angleX, ctx.angleY, ctx.angleZ)
     end
 
     -- 2. FBWInputProcessor: keys → rotation deltas
@@ -117,7 +117,7 @@ function FBWEngine.update(ctx)
     end
 
     -- 5. setAngles output
-    vehicle:setAngles(FBWOrientation.toEuler())
+    ctx.setAngles(FBWOrientation.toEuler())
 
     -- 6. Read forward direction + body angles
     local fwdX, fwdZ = FBWOrientation.getForward()
@@ -192,7 +192,7 @@ function FBWEngine.update(ctx)
         local actualSpeed = VelocityUtil.horizontalSpeed(ctx.velX, ctx.velZ)
         if actualSpeed < HeliConfig.FA_OFF_DEADZONE then
             desiredHX, desiredHZ = 0, 0
-            FBWEngine.initFlight(vehicle)
+            _reinitSim(posX, posZ)
         else
             desiredHX, desiredHZ = svx, svz
         end
@@ -202,7 +202,7 @@ function FBWEngine.update(ctx)
 
     -- 11. Select effective inertia
     if not _simInitialized then
-        FBWEngine.initFlight(vehicle)
+        _reinitSim(posX, posZ)
     end
 
     local fps = ctx.fps
@@ -222,7 +222,7 @@ function FBWEngine.update(ctx)
     end
 
     -- 14. Soft anchor: low speed + no input → blend sim toward actual
-    local posDeltaSpeed = HeliVelocityAdapter.getPositionDeltaSpeed()
+    local posDeltaSpeed = ctx.positionDeltaSpeed
     local desiredMag = math.sqrt(desiredHX * desiredHX + desiredHZ * desiredHZ)
     if desiredMag < HeliConfig.SIM_SNAP_THRESHOLD and not hasHInput and posDeltaSpeed < HeliConfig.SIM_SNAP_THRESHOLD then
         _sim:blendToward(posX, posZ, HeliConfig.SIM_BLEND_RATE)
@@ -238,8 +238,7 @@ function FBWEngine.update(ctx)
     local velZ = ctx.velZ
 
     -- 17. Vertical target (absorbed from HeliMove)
-    local targetVelY, gravComp, vBraking, engineDead = FBWFlightModel.computeVerticalTarget(
-        vehicle, curr_z, freeMode, keys, velY)
+    local targetVelY, gravComp, vBraking, engineDead = FBWFlightModel.computeVerticalTarget(ctx, freeMode)
 
     -- Landing zone taper
     if targetVelY < 0 and curr_z < nowMaxZ + HeliConfig.LANDING_ZONE_HEIGHT then
@@ -262,7 +261,7 @@ function FBWEngine.update(ctx)
         targetVelY, velY, ctx.mass, Kp, gravity,
         ctx.subSteps, ctx.physicsDelta, gravComp)
     if fy ~= 0 then
-        HeliForceAdapter.applyForceImmediate(vehicle, 0, fy, 0)
+        ctx.applyForce(0, fy, 0)
     end
 
     -- 20. Display speed from sim velocity
@@ -323,7 +322,7 @@ function FBWEngine.applyCorrectionForces(cctx)
         HeliConfig.get("fstopgain"), _flightAssistOff,
         HeliConfig.FA_OFF_DEADZONE, HeliConfig.FA_OFF_MIN_DAMPING_SPEED)
 
-    HeliForceAdapter.applyForceImmediate(cctx.vehicle, fx, 0, fz)
+    cctx.applyForce(fx, 0, fz)
 end
 
 -------------------------------------------------------------------------------------

@@ -34,7 +34,7 @@ VerticalModel = {}
 --- @param velY number Current vertical velocity
 --- @param curr_z number Current altitude (z-levels)
 --- @param fuelPercent number Remaining fuel (0..100)
---- @param engineCondition number Engine part condition (0..1, or -1 if no engine part)
+--- @param engineCondition number Engine part condition (0..100, or -1 if no engine part)
 --- @param freeMode boolean Flight assist off (coast instead of hover)
 --- @param cfg VerticalConfig Tuning parameters
 --- @return number targetVelY, boolean gravComp, boolean vBraking, boolean engineDead

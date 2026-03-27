@@ -49,6 +49,17 @@ HEFContext = {}
 --- @field subSteps number Integer physics sub-steps this frame (0 at high FPS)
 --- @field physicsDelta number Actual physics time this frame (seconds, may be fractional)
 --- @field blocked HEFBlocked Wall collision state booleans
+--- --- Vehicle state (read once, engines should prefer these over vehicle:get*) ---
+--- @field fuelPercent number Remaining fuel percentage (0..100)
+--- @field engineCondition number Engine part condition (0..100, or -1 if no engine part)
+--- @field angleX number Vehicle Euler angle X (degrees, toLuaNum coerced)
+--- @field angleY number Vehicle Euler angle Y (degrees, toLuaNum coerced)
+--- @field angleZ number Vehicle Euler angle Z (degrees, toLuaNum coerced)
+--- @field positionDeltaSpeed number Position-delta ground speed (m/s, immune to stale Bullet reads)
+--- --- Output closures (engines should prefer these over direct adapter/game API calls) ---
+--- @field applyForce fun(fx:number, fy:number, fz:number) Apply physics force (Bullet space, adapter-wrapped)
+--- @field setAngles fun(x:number, y:number, z:number) Set vehicle Euler angles (degrees)
+--- @field setPhysicsActive fun(active:boolean) Wake/sleep Bullet physics body
 
 -------------------------------------------------------------------------------------
 -- Runtime contract (mirrors EmmyLua above, used for validation)
@@ -83,6 +94,12 @@ HEFContext.CTX_FIELDS = {
     { name = "subSteps",      type = _types.number,      desc = "Integer physics sub-steps this frame" },
     { name = "physicsDelta",  type = _types.number,      desc = "Actual physics time this frame (seconds)" },
     { name = "blocked",       type = _types.bool_table,  desc = "Wall collision state booleans" },
+    { name = "fuelPercent",   type = _types.number,      desc = "Remaining fuel percentage (0..100)" },
+    { name = "engineCondition", type = _types.number,    desc = "Engine part condition (0..100, -1 if absent)" },
+    { name = "angleX",        type = _types.number,      desc = "Vehicle Euler angle X (degrees)" },
+    { name = "angleY",        type = _types.number,      desc = "Vehicle Euler angle Y (degrees)" },
+    { name = "angleZ",        type = _types.number,      desc = "Vehicle Euler angle Z (degrees)" },
+    { name = "positionDeltaSpeed", type = _types.number, desc = "Position-delta ground speed (m/s)" },
 }
 
 -------------------------------------------------------------------------------------
@@ -116,6 +133,11 @@ function HEFContext.build(vehicle, playerObj, tempVector2)
     local posZ = toLuaNum(vehicle:getY())  -- PZ Y = world Z
     local mass = toLuaNum(vehicle:getMass())
 
+    -- Vehicle angles (read once for engine init / orientation)
+    local angleX = toLuaNum(vehicle:getAngleX())
+    local angleY = toLuaNum(vehicle:getAngleY())
+    local angleZ = toLuaNum(vehicle:getAngleZ())
+
     -- Keyboard state
     local keys = {
         up    = isKeyDown(Keyboard.KEY_UP),
@@ -142,7 +164,10 @@ function HEFContext.build(vehicle, playerObj, tempVector2)
         right = HeliTerrainUtil.isBlocked(playerObj, "RIGHT", vehicle, tempVector2),
     }
 
-    return {
+    -- Position-delta speed (already computed as side-effect of getVelocity above)
+    local positionDeltaSpeed = HeliVelocityAdapter.getPositionDeltaSpeed()
+
+    local ctx = {
         vehicle = vehicle,
         playerObj = playerObj,
         keys = keys,
@@ -161,5 +186,38 @@ function HEFContext.build(vehicle, playerObj, tempVector2)
         subSteps = subSteps,
         physicsDelta = physicsDelta,
         blocked = blocked,
+        -- Vehicle state (eagerly read)
+        angleX = angleX,
+        angleY = angleY,
+        angleZ = angleZ,
+        positionDeltaSpeed = positionDeltaSpeed,
+        -- Output closures
+        applyForce = function(fx, fy, fz)
+            HeliForceAdapter.applyForceImmediate(vehicle, fx, fy, fz)
+        end,
+        setAngles = function(x, y, z)
+            vehicle:setAngles(x, y, z)
+        end,
+        setPhysicsActive = function(active)
+            vehicle:setPhysicsActive(active)
+        end,
     }
+
+    -- Lazy fields: deferred until first access so framework side-effects
+    -- (e.g., HeliAuxiliary.consumeGas) that run between build() and engine
+    -- update() are reflected. Cached via rawset on first read.
+    setmetatable(ctx, { __index = function(t, k)
+        if k == "fuelPercent" then
+            local v = vehicle:getRemainingFuelPercentage()
+            rawset(t, k, v)
+            return v
+        elseif k == "engineCondition" then
+            local enginePart = vehicle:getPartById("Engine")
+            local v = enginePart and enginePart:getCondition() or -1
+            rawset(t, k, v)
+            return v
+        end
+    end })
+
+    return ctx
 end
