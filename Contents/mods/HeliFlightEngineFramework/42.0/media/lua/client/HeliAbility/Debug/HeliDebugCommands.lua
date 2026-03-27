@@ -260,8 +260,9 @@ ISChat["onCommandEntered"] = function(self)
                         else
                             local oldVal = tunableMatch.value
                             HeliSimService.setTunable(subCommand, value)
+                            local newVal = HeliSimService.getTunable(subCommand)
                             showSuccess(subCommand .. ": " .. string.format("%.2f", oldVal) ..
-                                " -> " .. string.format("%.2f", value))
+                                " -> " .. string.format("%.2f", newVal))
                         end
                     end
                 else
@@ -277,9 +278,9 @@ ISChat["onCommandEntered"] = function(self)
                                 showError("Invalid number: " .. tostring(words[3]))
                             else
                                 local oldVal = HeliConfig.get(subCommand)
-                                HeliConfig.set(subCommand, value)
+                                local clamped = HeliConfig.set(subCommand, value)
                                 showSuccess(subCommand .. ": " .. string.format("%.2f", oldVal) ..
-                                    " -> " .. string.format("%.2f", value))
+                                    " -> " .. string.format("%.2f", clamped))
                             end
                         end
                     else

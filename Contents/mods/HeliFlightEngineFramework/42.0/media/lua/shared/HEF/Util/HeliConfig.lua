@@ -19,25 +19,25 @@ HeliConfig = {}
 -- Runtime-only params (pgain, dgain, etc.) don't appear in sandbox-options.txt.
 -------------------------------------------------------------------------------------
 local PARAMS = {
-    -- Sandbox-tunable (persisted per-save)
-    gravity     = { field = "GravityEstimate",     default = 9.8,   desc = "Gravity (Bullet units/s^2)" },
-    kp          = { field = "ResponsivenessGain",  default = 8.0,   desc = "Vertical PD gain (responsiveness)" },
-    brake       = { field = "BrakingMultiplier",   default = 0.05,  desc = "Base inertia rate (0.05=1s, 0.10=0.5s)" },
-    accel       = { field = "AccelMultiplier",     default = 1.5,   desc = "Acceleration inertia multiplier on brake" },
-    decel       = { field = "DecelMultiplier",     default = 2.25,  desc = "Deceleration inertia multiplier on brake" },
-    ascend      = { field = "AscendSpeed",         default = 8.0,   desc = "Ascend speed (Bullet Y/s)" },
-    descend     = { field = "DescendSpeed",        default = 14.0,  desc = "Descend speed (Bullet Y/s)" },
-    fall        = { field = "GravityFallSpeed",    default = 24.5,  desc = "Engine-off fall (Bullet Y/s)" },
-    deadfall    = { field = "EngineDeadFallSpeed",  default = 35.0,  desc = "Engine-dead fall (Bullet Y/s)" },
-    hspeed      = { field = "MaxHorizontalSpeed",  default = 450.0, desc = "Max horizontal speed (m/s)" },
+    -- Sandbox-tunable (persisted per-save) — min/max match sandbox-options.txt
+    gravity     = { field = "GravityEstimate",     default = 9.8,   min = 5.0,   max = 20.0,   desc = "Gravity (Bullet units/s^2)" },
+    kp          = { field = "ResponsivenessGain",  default = 8.0,   min = 1.0,   max = 20.0,   desc = "Vertical PD gain (responsiveness)" },
+    brake       = { field = "BrakingMultiplier",   default = 0.05,  min = 0.01,  max = 1.0,    desc = "Base inertia rate (0.05=1s, 0.10=0.5s)" },
+    accel       = { field = "AccelMultiplier",     default = 1.5,   min = 0.1,   max = 10.0,   desc = "Acceleration inertia multiplier on brake" },
+    decel       = { field = "DecelMultiplier",     default = 2.25,  min = 0.1,   max = 10.0,   desc = "Deceleration inertia multiplier on brake" },
+    ascend      = { field = "AscendSpeed",         default = 8.0,   min = 1.0,   max = 30.0,   desc = "Ascend speed (Bullet Y/s)" },
+    descend     = { field = "DescendSpeed",        default = 14.0,  min = 1.0,   max = 25.0,   desc = "Descend speed (Bullet Y/s)" },
+    fall        = { field = "GravityFallSpeed",    default = 24.5,  min = 2.0,   max = 50.0,   desc = "Engine-off fall (Bullet Y/s)" },
+    deadfall    = { field = "EngineDeadFallSpeed",  default = 35.0,  min = 3.0,   max = 60.0,   desc = "Engine-dead fall (Bullet Y/s)" },
+    hspeed      = { field = "MaxHorizontalSpeed",  default = 450.0, min = 10.0,  max = 1000.0, desc = "Max horizontal speed (m/s)" },
 
     -- Runtime-only (session overrides, from /hef commands)
-    pgain       = { default = 7.0,   desc = "Horizontal position error P gain" },
-    dgain       = { default = 0.3,   desc = "Horizontal position error D gain (damping)" },
-    maxerr      = { default = 10.0,  desc = "Max position error (tanh saturation, meters)" },
-    fstopgain   = { default = 0.3,   desc = "Velocity damping strength (0.3=smooth, 0.8=snappy)" },
-    yawgain     = { default = 0.9,   desc = "Yaw correction strength (0=none, 1=hard lock)" },
-    autolevel   = { default = 1.0,   desc = "Auto-leveling speed multiplier" },
+    pgain       = { default = 7.0,   min = 0.1,  max = 50.0, desc = "Horizontal position error P gain" },
+    dgain       = { default = 0.3,   min = 0.0,  max = 5.0,  desc = "Horizontal position error D gain (damping)" },
+    maxerr      = { default = 10.0,  min = 1.0,  max = 100.0, desc = "Max position error (tanh saturation, meters)" },
+    fstopgain   = { default = 0.3,   min = 0.0,  max = 2.0,  desc = "Velocity damping strength (0.3=smooth, 0.8=snappy)" },
+    yawgain     = { default = 0.9,   min = 0.0,  max = 1.0,  desc = "Yaw correction strength (0=none, 1=hard lock)" },
+    autolevel   = { default = 1.0,   min = 0.1,  max = 5.0,  desc = "Auto-leveling speed multiplier" },
 }
 
 -- Ordered list for consistent display in /hef show
@@ -73,12 +73,18 @@ function HeliConfig.get(shorthand)
 end
 
 --- Set a runtime override (session-only, not persisted).
+--- Value is clamped to [min, max] if bounds are defined for this parameter.
 --- @param shorthand string Parameter key
 --- @param value number New value
+--- @return number Actual value stored (after clamping)
 function HeliConfig.set(shorthand, value)
-    if PARAMS[shorthand] then
+    local p = PARAMS[shorthand]
+    if p then
+        if p.min and value < p.min then value = p.min end
+        if p.max and value > p.max then value = p.max end
         _overrides[shorthand] = value
     end
+    return value
 end
 
 --- Reset all runtime overrides to sandbox defaults.
