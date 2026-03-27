@@ -18,8 +18,6 @@ local _hasHorizontalInput = false
 local _flightAssistOff = false
 local _warmupCounter = 0
 local _simInitialized = false
-local _prevPosX = nil
-local _prevPosZ = nil
 
 -------------------------------------------------------------------------------------
 -- Toolkit instances (Core/ loads before Engines/, so globals are available)
@@ -45,11 +43,10 @@ function FBWEngine.resetFlightState()
     _flightAssistOff = false
     _warmupCounter = HeliConfig.GetWarmupFrames()
     _simInitialized = false
-    _prevPosX = nil
-    _prevPosZ = nil
 
     FBWOrientation.reset()
     FBWYawController.reset()
+    FBWTiltResolver.reset()
     _sim:reset(0, 0)
     _errorTracker:reset()
     HeliForceAdapter.resetPhysicsTime()
@@ -124,79 +121,25 @@ function FBWEngine.update(ctx)
     local angleZ = FBWOrientation.getBodyPitch()
     local angleX = FBWOrientation.getBodyRoll()
 
-    -- 7. Wall pre-blocking: use framework-provided blocked directions
-    local angle_90 = math.rad(90)
-    local pitchDev = angleZ - angle_90
-    local rollDev = angleX - angle_90
-    local isBlockedHit = false
-
-    local cosZ = math.cos(angleZ)
-    local cosX = math.cos(angleX)
-    local pitchBlocked = false
-    local rollBlocked = false
-
-    if math.abs(cosZ) > HeliConfig.DIRECTION_COS_THRESHOLD then
-        pitchBlocked = (cosZ < 0) and blocked.up or blocked.down
-        if pitchBlocked then isBlockedHit = true end
-    end
-    if math.abs(cosX) > HeliConfig.DIRECTION_COS_THRESHOLD then
-        rollBlocked = (cosX < 0) and blocked.right or blocked.left
-        if rollBlocked then isBlockedHit = true end
-    end
-
-    local effectivePitchDev = pitchBlocked and 0 or pitchDev
-    local effectiveRollDev = rollBlocked and 0 or rollDev
-    local totalTiltRad = math.sqrt(effectivePitchDev * effectivePitchDev + effectiveRollDev * effectiveRollDev)
-
-    -- 8. FBWFilters pipeline: noiseFloor → thrustDecomposition → speedClamp → directionClamp
-    local noiseFloor = HeliConfig.TILT_NOISE_FLOOR
-    local maxHSpeed = HeliConfig.GetMaxHorizontalSpeed()
-
-    local effectiveTilt = FBWFilters.applyNoiseFloor(totalTiltRad, noiseFloor)
-
-    local totalVelX, totalVelZ, totalSpeed = FBWFilters.decomposeThrustDirection(
-        effectivePitchDev, effectiveRollDev, totalTiltRad, fwdX, fwdZ, maxHSpeed, effectiveTilt)
-
-    totalVelX, totalVelZ, totalSpeed = FBWFilters.clampSpeed(totalVelX, totalVelZ, maxHSpeed)
-
-    -- Direction clamping: need movement angle from position delta
+    -- 7-8. Wall pre-blocking + FBWFilters pipeline → desired horizontal velocity
     local posX = ctx.posX
     local posZ = ctx.posZ
-    if _prevPosX and totalSpeed > 0.1 then
-        local dx = posX - _prevPosX
-        local dz = posZ - _prevPosZ
-        local moveMag = math.sqrt(dx * dx + dz * dz)
-        if moveMag > 0.08 then
-            local moveAngle = math.atan2(dz, dx)
-            totalVelX, totalVelZ = FBWFilters.clampThrustDirection(
-                totalVelX, totalVelZ, totalSpeed, moveAngle, moveMag, HeliConfig.MAX_THRUST_LEAD)
-        end
-    end
-    _prevPosX = posX
-    _prevPosZ = posZ
+    local totalVelX, totalVelZ, totalSpeed, totalTiltRad, isBlockedHit =
+        FBWTiltResolver.resolve(angleZ, angleX, blocked, fwdX, fwdZ, posX, posZ)
 
     -- 9. Tilt/input flags
+    local noiseFloor = HeliConfig.TILT_NOISE_FLOOR
     local noInput = (totalTiltRad < noiseFloor * 2) or (totalSpeed < HeliConfig.NO_INPUT_SPEED_THRESHOLD)
     local hasHInput = not noInput
     _hasTiltInput = hasHInput
     _hasHorizontalInput = hasHInput
 
-    -- 10. FA-off coast logic
-    local desiredHX, desiredHZ = 0, 0
-    if hasHInput then
-        desiredHX, desiredHZ = totalVelX, totalVelZ
-    end
-
-    if freeMode and noInput then
-        local _, _, svx, svz = _sim:getState()
-        local actualSpeed = VelocityUtil.horizontalSpeed(ctx.velX, ctx.velZ)
-        if actualSpeed < HeliConfig.FA_OFF_DEADZONE then
-            desiredHX, desiredHZ = 0, 0
-            _reinitSim(posX, posZ)
-        else
-            desiredHX, desiredHZ = svx, svz
-        end
-        hasHInput = true
+    -- 10. FA-off coast logic → resolve desired velocity for sim
+    local desiredHX, desiredHZ
+    desiredHX, desiredHZ, hasHInput = FBWSimController.resolveDesiredVelocity(
+        hasHInput, totalVelX, totalVelZ, freeMode, noInput,
+        _sim, ctx.velX, ctx.velZ, _reinitSim, posX, posZ)
+    if hasHInput and not _hasHorizontalInput then
         _hasHorizontalInput = true
     end
 
@@ -210,23 +153,9 @@ function FBWEngine.update(ctx)
     local baseBrake = HeliConfig.GetBrake()
     local effectiveInertia = baseBrake * (hasHInput and HeliConfig.GetAccel() or HeliConfig.GetDecel())
 
-    -- 12. Sim model advance
-    _sim:advance(desiredHX, desiredHZ, deltaTime, effectiveInertia)
-
-    -- 13. Heading re-anchor check (skip in FA-off — coast must survive turns)
-    if not _flightAssistOff then
-        if FBWYawController.checkHeadingReanchor(fps) then
-            _sim:snapPosition(posX, posZ)
-            _errorTracker:clearHistory()
-        end
-    end
-
-    -- 14. Soft anchor: low speed + no input → blend sim toward actual
-    local posDeltaSpeed = ctx.positionDeltaSpeed
-    local desiredMag = math.sqrt(desiredHX * desiredHX + desiredHZ * desiredHZ)
-    if desiredMag < HeliConfig.SIM_SNAP_THRESHOLD and not hasHInput and posDeltaSpeed < HeliConfig.SIM_SNAP_THRESHOLD then
-        _sim:blendToward(posX, posZ, HeliConfig.SIM_BLEND_RATE)
-    end
+    -- 12-14. Sim advance + heading reanchor + soft anchor
+    FBWSimController.advanceAndAnchor(_sim, _errorTracker, desiredHX, desiredHZ,
+        deltaTime, effectiveInertia, hasHInput, posX, posZ, fps, _flightAssistOff, ctx.positionDeltaSpeed)
 
     -- 15. Record in error tracker
     local simPosX, simPosZ, simVelX, simVelZ = _sim:getState()
