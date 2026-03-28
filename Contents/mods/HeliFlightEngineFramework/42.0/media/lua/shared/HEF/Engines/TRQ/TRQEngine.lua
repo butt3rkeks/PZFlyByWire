@@ -31,7 +31,7 @@ local _simInitialized = false
 local _smoothedVelY = 0
 local _adaptiveGainMultiplier = 1.0
 
--- TRQ-specific debug state (persisted for getDebugState)
+-- Debug state (persisted for getDebugState / recorder)
 local _lastTorqueX = 0
 local _lastTorqueY = 0
 local _lastTorqueZ = 0
@@ -39,6 +39,21 @@ local _lastOmegaX = 0
 local _lastOmegaY = 0
 local _lastOmegaZ = 0
 local _lastAngErrMag = 0
+-- Flight pipeline state (shared with FBW columns)
+local _lastDesiredHX = 0
+local _lastDesiredHZ = 0
+local _lastTargetVelY = 0
+local _lastAngleZ = 0
+local _lastAngleX = 0
+local _lastFwdX = 0
+local _lastFwdZ = 0
+-- TRQ-specific: desired vs actual angles for tracking analysis
+local _lastDesAngleX = 0
+local _lastDesAngleY = 0
+local _lastDesAngleZ = 0
+local _lastActAngleX = 0
+local _lastActAngleY = 0
+local _lastActAngleZ = 0
 
 -------------------------------------------------------------------------------------
 -- Toolkit instances
@@ -74,6 +89,19 @@ function TRQEngine.resetFlightState()
     _lastOmegaY = 0
     _lastOmegaZ = 0
     _lastAngErrMag = 0
+    _lastDesiredHX = 0
+    _lastDesiredHZ = 0
+    _lastTargetVelY = 0
+    _lastAngleZ = 0
+    _lastAngleX = 0
+    _lastFwdX = 0
+    _lastFwdZ = 0
+    _lastDesAngleX = 0
+    _lastDesAngleY = 0
+    _lastDesAngleZ = 0
+    _lastActAngleX = 0
+    _lastActAngleY = 0
+    _lastActAngleZ = 0
 
     FBWOrientation.reset()
     FBWYawController.reset()
@@ -165,12 +193,23 @@ function TRQEngine.update(ctx)
     _lastOmegaY = omegaY
     _lastOmegaZ = omegaZ
     _lastAngErrMag = angErrMag
+    _lastActAngleX = ctx.angleX
+    _lastActAngleY = ctx.angleY
+    _lastActAngleZ = ctx.angleZ
+    local _desX, _desY, _desZ = FBWOrientation.toEuler()
+    _lastDesAngleX = _desX
+    _lastDesAngleY = _desY
+    _lastDesAngleZ = _desZ
 
     -- 6. Read forward direction + body angles from desired orientation
     -- (FBW reads from FBWOrientation for the flight model — same here)
     local fwdX, fwdZ = FBWOrientation.getForward()
     local angleZ = FBWOrientation.getBodyPitch()
     local angleX = FBWOrientation.getBodyRoll()
+    _lastAngleZ = angleZ
+    _lastAngleX = angleX
+    _lastFwdX = fwdX
+    _lastFwdZ = fwdZ
 
     -- 7-8. Wall pre-blocking + FBWFilters pipeline → desired horizontal velocity
     local posX = ctx.posX
@@ -230,6 +269,11 @@ function TRQEngine.update(ctx)
         landingFactor = math.max(landingFactor, HeliConfig.LANDING_MIN_SPEED_FACTOR)
         targetVelY = targetVelY * landingFactor
     end
+
+    -- Persist flight model outputs for debug
+    _lastDesiredHX = desiredHX
+    _lastDesiredHZ = desiredHZ
+    _lastTargetVelY = targetVelY
 
     -- 18. Dual-path activation
     local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxPositionError())
@@ -468,14 +512,18 @@ end
 -------------------------------------------------------------------------------------
 
 local DEBUG_COLUMNS = {
+    -- Horizontal flight model (shared with FBW)
     "simPosX", "simPosZ", "simVelX", "simVelZ",
     "errX", "errZ", "errRateX", "errRateZ",
     "desiredVelX", "desiredVelZ", "targetVelY",
     "angleZ", "angleX", "fwdX", "fwdZ",
-    -- TRQ-specific
+    -- TRQ angular PD
     "torqueX", "torqueY", "torqueZ",
     "omegaX", "omegaY", "omegaZ",
     "angErrMag",
+    -- TRQ desired vs actual (tracking quality)
+    "desAngleX", "desAngleY", "desAngleZ",
+    "actAngleX", "actAngleY", "actAngleZ",
 }
 
 function TRQEngine.getDebugColumns()
@@ -487,13 +535,23 @@ function TRQEngine.getDebugState()
     local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxPositionError())
     local Ix, Iy, Iz, inertiaValid = TRQTorqueController.getInertia()
     return {
+        -- Horizontal flight model
         simPosX = simPosX, simPosZ = simPosZ,
         simVelX = simVelX, simVelZ = simVelZ,
         errX = errX, errZ = errZ,
         errRateX = errRateX, errRateZ = errRateZ,
+        desiredVelX = _lastDesiredHX, desiredVelZ = _lastDesiredHZ,
+        targetVelY = _lastTargetVelY,
+        angleZ = _lastAngleZ, angleX = _lastAngleX,
+        fwdX = _lastFwdX, fwdZ = _lastFwdZ,
+        -- TRQ angular PD
         torqueX = _lastTorqueX, torqueY = _lastTorqueY, torqueZ = _lastTorqueZ,
         omegaX = _lastOmegaX, omegaY = _lastOmegaY, omegaZ = _lastOmegaZ,
         angErrMag = _lastAngErrMag,
+        -- Desired vs actual angles
+        desAngleX = _lastDesAngleX, desAngleY = _lastDesAngleY, desAngleZ = _lastDesAngleZ,
+        actAngleX = _lastActAngleX, actAngleY = _lastActAngleY, actAngleZ = _lastActAngleZ,
+        -- Inertia (not in columns — available via /hef inertia command)
         Ix = Ix, Iy = Iy, Iz = Iz, inertiaValid = inertiaValid,
     }
 end
