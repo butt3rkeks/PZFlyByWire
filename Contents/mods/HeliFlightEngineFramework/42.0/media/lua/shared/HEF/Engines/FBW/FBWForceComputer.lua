@@ -79,11 +79,17 @@ end
 --- @return number fy Vertical force
 function FBWForceComputer.computeThrustForce(desiredVelY, savedVelY, mass, verticalGain, gravity, subSteps, physicsDelta, applyGravComp)
     if subSteps > 0 then
+        -- Force WITHOUT subSteps multiplier. Bullet's applyCentralForce persists
+        -- across all substeps within a single stepSimulation call — the physics
+        -- engine integrates (force/mass * dt) per substep internally. Multiplying
+        -- by subSteps here caused a subSteps² effect: when subSteps alternates
+        -- 1↔2 between frames, effective gain swung 1x↔4x, producing oscillation
+        -- that prevented convergence to target velocity during horizontal flight.
         local errorY = desiredVelY - savedVelY
-        local thrustForceY = verticalGain * errorY * mass * subSteps
+        local thrustForceY = verticalGain * errorY * mass
 
         if applyGravComp then
-            local gravForce = mass * gravity * subSteps
+            local gravForce = mass * gravity
             thrustForceY = thrustForceY + gravForce
 
             -- Hover anti-creep: when hovering and already moving upward (or stationary),

@@ -19,7 +19,7 @@ local FBW_PARAMS = {
     gravity     = { ns = "FBW", field = "GravityEstimate",     default = 9.8,   min = 5.0,   max = 20.0,   desc = "Gravity (Bullet units/s^2)" },
     engineDeadCondition = { ns = "FBW", field = "EngineDeadCondition", default = 10,    min = 0,     max = 100,    desc = "Engine condition % for engine-dead" },
     engineDeadFallSpeed = { ns = "FBW", field = "EngineDeadFallSpeed", default = 35.0,  min = 3.0,   max = 60.0,   desc = "Engine-dead fall speed (Bullet Y/s)" },
-    verticalGain        = { ns = "FBW", field = "ResponsivenessGain",  default = 8.0,   min = 1.0,   max = 20.0,   desc = "Vertical PD gain (responsiveness)" },
+    verticalGain        = { ns = "FBW", field = "ResponsivenessGain",  default = 16.0,  min = 1.0,   max = 40.0,   desc = "Vertical PD gain (responsiveness)" },
     brake       = { ns = "FBW", field = "BrakingMultiplier",   default = 0.05,  min = 0.01,  max = 1.0,    desc = "Base inertia rate (0.05=1s, 0.10=0.5s)" },
     accel       = { ns = "FBW", field = "AccelMultiplier",     default = 1.5,   min = 0.1,   max = 10.0,   desc = "Acceleration inertia multiplier on brake" },
     decel       = { ns = "FBW", field = "DecelMultiplier",     default = 2.25,  min = 0.1,   max = 10.0,   desc = "Deceleration inertia multiplier on brake" },

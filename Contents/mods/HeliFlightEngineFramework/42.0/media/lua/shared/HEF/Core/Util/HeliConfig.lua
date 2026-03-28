@@ -204,7 +204,6 @@ HeliConfig.FA_OFF_DEADZONE = 1.5
 -- FA-off minimum damping speed (m/s): below this, damping is not applied.
 HeliConfig.FA_OFF_MIN_DAMPING_SPEED = 0.05
 
-
 -- Dual-path activation thresholds
 HeliConfig.DUAL_PATH_ERROR_THRESHOLD = 0.5
 HeliConfig.DUAL_PATH_SPEED_THRESHOLD = 0.1

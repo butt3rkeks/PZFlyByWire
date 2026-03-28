@@ -43,6 +43,9 @@ local PHANTOM_WHEEL = [[{
     suspensionDamping = 0,
     maxSuspensionTravelCm = 0,
     suspensionRestLength = 0,
+    rollInfluence = 0,
+    wheelFriction = 0,
+    stoppingMovementForce = 0,
 }]]
 
 local function injectPhantomWheelIntoWarThunderHelis()

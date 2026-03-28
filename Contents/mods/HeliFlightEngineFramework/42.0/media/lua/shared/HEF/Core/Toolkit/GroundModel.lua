@@ -32,8 +32,8 @@ function GroundModel.update(ctx, cfg)
     if keys.w and ctx.fuelPercent > 0 then
         ctx.setPhysicsActive(true)
         if ctx.subSteps > 0 then
-            local liftoffForceY = cfg.verticalGain * (cfg.ascendSpeed - velY) * mass * ctx.subSteps
-                               + mass * cfg.gravity * ctx.subSteps
+            local liftoffForceY = cfg.verticalGain * (cfg.ascendSpeed - velY) * mass
+                               + mass * cfg.gravity
             ctx.applyForce(
                 -velX * mass * cfg.velocityKillFactor,
                 liftoffForceY,

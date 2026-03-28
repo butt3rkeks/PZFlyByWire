@@ -10,6 +10,11 @@
 
 FBWEngine = {}
 
+-- Vertical velocity EMA smoothing alpha (0..1). Lower = more smoothing.
+-- Filters Bullet rigid body rocking from the vertical PD controller input
+-- so ascend/descend rate stays consistent during horizontal flight.
+FBWEngine.VERTICAL_VELOCITY_SMOOTHING = 0.3
+
 -------------------------------------------------------------------------------------
 -- Engine state (coordination only — zero domain logic)
 -------------------------------------------------------------------------------------
@@ -18,6 +23,7 @@ local _hasHorizontalInput = false
 local _flightAssistOff = false
 local _warmupCounter = 0
 local _simInitialized = false
+local _smoothedVelY = 0
 
 -------------------------------------------------------------------------------------
 -- Toolkit instances (Core/ loads before Engines/, so globals are available)
@@ -43,6 +49,7 @@ function FBWEngine.resetFlightState()
     _flightAssistOff = false
     _warmupCounter = HeliConfig.GetWarmupFrames()
     _simInitialized = false
+    _smoothedVelY = 0
 
     FBWOrientation.reset()
     FBWYawController.reset()
@@ -166,6 +173,15 @@ function FBWEngine.update(ctx)
     local velY = ctx.velY
     local velZ = ctx.velZ
 
+    -- 16b. Smooth velY for the vertical PD controller.
+    -- Bullet's rigid body rocking during horizontal flight causes velY to
+    -- oscillate wildly frame-to-frame. The raw signal makes the PD chase noise
+    -- instead of driving toward target, severely reducing effective vertical rate.
+    -- EMA filter (alpha=0.3) gives ~3-frame effective window — fast enough to
+    -- track real ascent/descent, smooth enough to reject per-frame rocking.
+    local alpha = FBWEngine.VERTICAL_VELOCITY_SMOOTHING
+    _smoothedVelY = alpha * velY + (1.0 - alpha) * _smoothedVelY
+
     -- 17. Vertical target (absorbed from HeliMove)
     local targetVelY, gravComp, vBraking, engineDead = FBWFlightModel.computeVerticalTarget(ctx, freeMode)
 
@@ -183,11 +199,11 @@ function FBWEngine.update(ctx)
     local dualPathActive = FBWEngine.isWarmedUp() and
         (hasHInput or errMag > HeliConfig.DUAL_PATH_ERROR_THRESHOLD or actualHorizontalSpeed > HeliConfig.DUAL_PATH_SPEED_THRESHOLD)
 
-    -- 19. Vertical thrust
+    -- 19. Vertical thrust (uses smoothed velY for stable PD output)
     local verticalGain = HeliConfig.GetVerticalGain()
     local gravity = HeliConfig.GetGravity()
     local verticalForce = FBWForceComputer.computeThrustForce(
-        targetVelY, velY, ctx.mass, verticalGain, gravity,
+        targetVelY, _smoothedVelY, ctx.mass, verticalGain, gravity,
         ctx.subSteps, ctx.physicsDelta, gravComp)
     if verticalForce ~= 0 then
         ctx.applyForce(0, verticalForce, 0)

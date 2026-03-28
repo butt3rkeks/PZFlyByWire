@@ -126,7 +126,7 @@ local function helicopterMovementUpdate()
             local fallSpeed = HeliConfig.GetEngineOffFallSpeed()
             local fallGain = HeliConfig.GetFallPdGain()
             if ctx.subSteps > 0 then
-                local fallForceY = fallGain * (-fallSpeed - velY) * ctx.mass * ctx.subSteps
+                local fallForceY = fallGain * (-fallSpeed - velY) * ctx.mass
                 if fallForceY ~= 0 then
                     HeliForceAdapter.applyForceImmediate(vehicle, 0, fallForceY, 0)
                 end
