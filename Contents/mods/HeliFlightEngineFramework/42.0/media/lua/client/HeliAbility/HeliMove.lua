@@ -173,9 +173,13 @@ local function helicopterMovementUpdate()
 
     -- === GROUND PATH ===
     else
-        _flightState = STATE_INACTIVE
-
         local groundResult = HeliSimService.updateGround(ctx)
+
+        -- Engine ground handlers can request flight state preservation across
+        -- the ground phase (e.g. FBW keeps sim/orientation alive in transition zone).
+        if not groundResult.keepFlightState then
+            _flightState = STATE_INACTIVE
+        end
 
         vehicle:setSpeedKmHour(groundResult.displaySpeed)
         _dualPathActive = false

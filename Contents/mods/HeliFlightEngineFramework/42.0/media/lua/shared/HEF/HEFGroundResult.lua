@@ -5,6 +5,7 @@
 --- @class HEFGroundResult
 --- @field liftoff boolean True = framework transitions to warmup/airborne
 --- @field displaySpeed number km/h for speedometer
+--- @field keepFlightState boolean|nil When true, framework preserves engine flight state (skips INACTIVE reset). Engines use this to keep sim/orientation state alive across ground↔airborne transitions.
 
 HEFGroundResult = {}
 

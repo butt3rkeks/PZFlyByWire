@@ -146,9 +146,14 @@ HeliConfig.PD_ERROR_THRESHOLD = 0.5
 -- Flight model constants (not sandbox-tunable, but named for clarity)
 -------------------------------------------------------------------------------------
 
+-- Transition zone: engines can blend ground/airborne forces across this altitude band.
+-- BOTTOM = pure ground hold. TOP = full airborne authority.
+HeliConfig.TRANSITION_ZONE_BOTTOM = 0.1
+HeliConfig.TRANSITION_ZONE_TOP    = 0.5
+
 -- Airborne detection: helicopter is "airborne" when currentAltitude > groundLevel + this margin.
--- Below this margin, the ground path handles velocity zeroing and liftoff.
-HeliConfig.AIRBORNE_MARGIN = 0.6
+-- Set to match TRANSITION_ZONE_TOP so the engine's ground handler owns the entire transition.
+HeliConfig.AIRBORNE_MARGIN = HeliConfig.TRANSITION_ZONE_TOP
 
 -- Landing zone: descent speed tapers in the last N Z-levels above ground.
 -- Floor factor prevents descent from stopping entirely (always makes visible progress).

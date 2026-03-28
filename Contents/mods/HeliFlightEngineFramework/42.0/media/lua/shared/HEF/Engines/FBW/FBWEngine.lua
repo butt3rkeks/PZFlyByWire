@@ -222,18 +222,124 @@ function FBWEngine.update(ctx)
 end
 
 -------------------------------------------------------------------------------------
--- IFlightEngine: updateGround(ctx) — ground behavior
+-- IFlightEngine: updateGround(ctx) — transition-aware ground behavior
+--
+-- Replaces generic GroundModel with FBW-specific logic that blends ground-hold
+-- forces and airborne PD forces across the transition zone. This eliminates
+-- the abrupt jolt when crossing the airborne threshold.
+--
+-- Blend factor t:
+--   0   (below TRANSITION_ZONE_BOTTOM) = pure ground hold
+--   0→1 (transition zone)              = ground hold fades, FBW thrust active
+--   1   (at TRANSITION_ZONE_TOP)       = full airborne (HeliMove switches to update())
+--
+-- keepFlightState = true in the transition zone preserves sim model, orientation,
+-- yaw controller, and error tracker across the ground↔airborne boundary.
 -------------------------------------------------------------------------------------
 --- @param ctx HEFCtx
 --- @return HEFGroundResult
 function FBWEngine.updateGround(ctx)
-    return GroundModel.update(ctx, {
-        velocityKillFactor = HeliConfig.GROUND_VELOCITY_KILL,
-        velocityThreshold  = HeliConfig.GROUND_VELOCITY_THRESHOLD,
-        ascendSpeed        = HeliConfig.GetAscend(),
-        gravity            = HeliConfig.GetGravity(),
-        verticalGain       = HeliConfig.GetVerticalGain(),
-    })
+    local keys = ctx.keys
+    local mass = ctx.mass
+    local velX, velY, velZ = ctx.velX, ctx.velY, ctx.velZ
+    local heightAboveGround = ctx.currentAltitude - ctx.groundLevelZ
+
+    -- Blend factor: 0 = pure ground hold, 1 = full flight authority
+    local BOTTOM = HeliConfig.TRANSITION_ZONE_BOTTOM
+    local TOP    = HeliConfig.TRANSITION_ZONE_TOP
+    local t = math.max(0, math.min(1, (heightAboveGround - BOTTOM) / (TOP - BOTTOM)))
+
+    local inTransition = (t > 0)
+    local liftoff = false
+
+    -- Keep sim model anchored to actual position during transition zone
+    -- so FBW state is warm and ready when HeliMove switches to update().
+    if inTransition then
+        _reinitSim(ctx.posX, ctx.posZ)
+
+        -- Hold orientation level during transition — without this, Bullet's
+        -- native vehicle physics (wheel/suspension model) takes over rotation
+        -- and can flip the helicopter.
+        if FBWOrientation.isInitialized() then
+            ctx.setAngles(FBWOrientation.toEuler())
+        else
+            -- Not yet initialized: lock to current angles (prevent Bullet drift)
+            ctx.setAngles(ctx.angleX, ctx.angleY, ctx.angleZ)
+        end
+    end
+
+    if keys.w and ctx.fuelPercent > 0 then
+        -- === LIFTOFF ===
+        ctx.setPhysicsActive(true)
+        if ctx.subSteps > 0 then
+            -- Vertical: same PD + gravComp as airborne path (consistent force model)
+            local verticalGain = HeliConfig.GetVerticalGain()
+            local gravity = HeliConfig.GetGravity()
+            local ascendSpeed = HeliConfig.GetAscend()
+            local thrustY = FBWForceComputer.computeThrustForce(
+                ascendSpeed, velY, mass, verticalGain, gravity,
+                ctx.subSteps, ctx.physicsDelta, true)
+
+            -- Horizontal: velocity kill fades out as t rises
+            local groundHold = (1.0 - t) * HeliConfig.GROUND_VELOCITY_KILL
+            ctx.applyForce(
+                -velX * mass * groundHold,
+                thrustY,
+                -velZ * mass * groundHold)
+        end
+        liftoff = true
+
+    elseif inTransition then
+        -- === TRANSITION ZONE (no W key) ===
+        -- Use the same vertical model as airborne: handles S-key descent,
+        -- no-fuel fall, engine dead, and hover (no input → desiredVelY=0).
+        local groundVelMag = math.abs(velX) + math.abs(velY) + math.abs(velZ)
+
+        -- Horizontal: velocity kill fades with altitude
+        if groundVelMag > HeliConfig.GROUND_VELOCITY_THRESHOLD then
+            local killFactor = HeliConfig.GROUND_VELOCITY_KILL * (1.0 - t)
+            ctx.applyForce(
+                -velX * mass * killFactor,
+                0,
+                -velZ * mass * killFactor)
+        end
+
+        -- Vertical: full FBW vertical model (S=descend, nothing=hover, etc.)
+        if ctx.subSteps > 0 then
+            local freeMode = ctx.vehicle:getModData().AutoBalance == true
+            local targetVelY, gravComp = FBWFlightModel.computeVerticalTarget(ctx, freeMode)
+
+            -- Apply landing zone taper (same as airborne path)
+            if targetVelY < 0 and ctx.currentAltitude < ctx.groundLevelZ + HeliConfig.LANDING_ZONE_HEIGHT then
+                local landingFactor = math.max((ctx.currentAltitude - ctx.groundLevelZ) / HeliConfig.LANDING_ZONE_HEIGHT, 0)
+                landingFactor = math.max(landingFactor, HeliConfig.LANDING_MIN_SPEED_FACTOR)
+                targetVelY = targetVelY * landingFactor
+            end
+
+            local verticalGain = HeliConfig.GetVerticalGain()
+            local gravity = HeliConfig.GetGravity()
+            local forceY = FBWForceComputer.computeThrustForce(
+                targetVelY, velY, mass, verticalGain, gravity,
+                ctx.subSteps, ctx.physicsDelta, gravComp)
+            ctx.applyForce(0, forceY, 0)
+        end
+
+    else
+        -- === PURE GROUND (below transition zone, no W key) ===
+        local groundVelMag = math.abs(velX) + math.abs(velY) + math.abs(velZ)
+        if groundVelMag > HeliConfig.GROUND_VELOCITY_THRESHOLD then
+            ctx.applyForce(
+                -velX * mass * HeliConfig.GROUND_VELOCITY_KILL,
+                -velY * mass * HeliConfig.GROUND_VELOCITY_KILL,
+                -velZ * mass * HeliConfig.GROUND_VELOCITY_KILL)
+        end
+    end
+
+    return {
+        liftoff = liftoff,
+        displaySpeed = 0,
+        keepFlightState = inTransition,
+    }
 end
 
 -------------------------------------------------------------------------------------

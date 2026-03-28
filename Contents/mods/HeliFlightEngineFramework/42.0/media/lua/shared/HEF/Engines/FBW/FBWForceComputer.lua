@@ -83,7 +83,15 @@ function FBWForceComputer.computeThrustForce(desiredVelY, savedVelY, mass, verti
         local thrustForceY = verticalGain * errorY * mass * subSteps
 
         if applyGravComp then
-            thrustForceY = thrustForceY + mass * gravity * subSteps
+            local gravForce = mass * gravity * subSteps
+            thrustForceY = thrustForceY + gravForce
+
+            -- Hover anti-creep: when target is zero (hover), clamp total thrust
+            -- so P-term overshoot can't push above pure gravity compensation.
+            -- This prevents the upward drift from high gain * subSteps overshoot.
+            if desiredVelY == 0 and thrustForceY > gravForce then
+                thrustForceY = gravForce
+            end
         end
 
         return thrustForceY
