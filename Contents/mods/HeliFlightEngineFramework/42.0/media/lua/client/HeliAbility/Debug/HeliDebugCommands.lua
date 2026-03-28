@@ -371,6 +371,7 @@ ISChat["onCommandEntered"] = function(self)
 
         if #words >= 1 and string.lower(words[1]) == "/hef" then
             local subCommand = words[2] and string.lower(words[2]) or "help"
+            local rawSubCommand = words[2] or "help"  -- preserve case for param names
             local handler = commands[subCommand]
 
             if handler then
@@ -380,13 +381,15 @@ ISChat["onCommandEntered"] = function(self)
                 end
                 handler(args)
             else
-                -- Try as engine tunable
+                -- Try as engine tunable (case-insensitive match)
                 local tunables = HeliSimService.getTunables()
                 local tunableMatch = nil
+                local tunableName = nil
                 if tunables then
                     for _, t in ipairs(tunables) do
-                        if t.name == subCommand then
+                        if string.lower(t.name) == subCommand then
                             tunableMatch = t
+                            tunableName = t.name  -- use canonical name
                             break
                         end
                     end
@@ -394,52 +397,59 @@ ISChat["onCommandEntered"] = function(self)
 
                 if tunableMatch then
                     if not words[3] then
-                        showValue(subCommand .. " = " .. string.format("%.2f", tunableMatch.value))
+                        showValue(tunableName .. " = " .. string.format("%.2f", tunableMatch.value))
                     else
                         local value = tonumber(words[3])
                         if not value then
                             showError("Invalid number: " .. tostring(words[3]))
                         else
-                            doSetTunable(subCommand, value)
+                            doSetTunable(tunableName, value)
                         end
                     end
                 else
-                    -- Try as HeliConfig param
+                    -- Try as HeliConfig param (case-insensitive match)
                     local PARAMS = HeliConfig.getParamDefs()
-                    if PARAMS[subCommand] then
+                    local paramName = nil
+                    for name, _ in pairs(PARAMS) do
+                        if string.lower(name) == subCommand then
+                            paramName = name
+                            break
+                        end
+                    end
+                    if paramName then
                         if not words[3] then
-                            local val = HeliConfig.get(subCommand)
-                            showValue(subCommand .. " = " .. string.format("%.2f", val))
+                            local val = HeliConfig.get(paramName)
+                            showValue(paramName .. " = " .. string.format("%.2f", val))
                         else
                             local value = tonumber(words[3])
                             if not value then
                                 showError("Invalid number: " .. tostring(words[3]))
                             else
-                                doSetParam(subCommand, value)
+                                doSetParam(paramName, value)
                             end
                         end
                     else
-                        -- Try as engine command
+                        -- Try as engine command (case-insensitive)
                         local engineCmds = HeliSimService.getCommands()
-                        local isEngineCmd = false
+                        local engineCmdName = nil
                         if engineCmds then
                             for _, c in ipairs(engineCmds) do
-                                if c.name == subCommand then
-                                    isEngineCmd = true
+                                if string.lower(c.name) == subCommand then
+                                    engineCmdName = c.name
                                     break
                                 end
                             end
                         end
 
-                        if isEngineCmd then
+                        if engineCmdName then
                             local argsStr = ""
                             for i = 3, #words do
                                 if i > 3 then argsStr = argsStr .. " " end
                                 argsStr = argsStr .. words[i]
                             end
-                            doEngineCommand(subCommand, argsStr)
+                            doEngineCommand(engineCmdName, argsStr)
                         else
-                            showError("Unknown command: " .. subCommand)
+                            showError("Unknown command: " .. rawSubCommand)
                             showInfo("Type /hef help for available commands.")
                         end
                     end

@@ -26,7 +26,7 @@ local TRQ_PARAMS = {
     trqOmegaAlpha   = { default = 0.4,  min = 0.05, max = 1.0,   desc = "Angular velocity EMA smoothing (0=smooth, 1=raw)" },
 
     -- Safety limits
-    trqMaxTorque    = { default = 200.0, min = 10.0, max = 2000.0, desc = "Max torque per axis (Nm)" },
+    trqMaxTorque    = { default = 50000.0, min = 100.0, max = 500000.0, desc = "Max torque per axis (Nm)" },
 
     -- Warmup
     trqWarmupFrames = { default = 20, min = 1, max = 120, desc = "Warmup frames before torque control activates" },

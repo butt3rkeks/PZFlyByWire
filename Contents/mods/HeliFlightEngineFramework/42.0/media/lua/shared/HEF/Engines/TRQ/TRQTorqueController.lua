@@ -75,6 +75,8 @@ end
 --- Called once during initFlight().
 --- @param vehicle BaseVehicle
 function TRQTorqueController.initFromVehicle(vehicle)
+    if _inertiaValid then return end  -- already computed for this vehicle
+
     local mass = toLuaNum(vehicle:getMass())
     if mass <= 0 then
         _inertiaValid = false
