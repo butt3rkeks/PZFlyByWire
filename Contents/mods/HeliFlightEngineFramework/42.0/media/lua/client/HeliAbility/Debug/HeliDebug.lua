@@ -71,15 +71,26 @@ local _recorder = {
     filename = nil,
 }
 
--- CSV header matches writeFlightFrame column order exactly.
-local CSV_HEADER = "frame,ms,state,fps,actualX,actualZ,alt,velocityX,velocityY,velocityZ,simPosX,simPosZ,simVelX,simVelZ,errorX,errorZ,desiredVelX,desiredVelZ,desiredVelY,subSteps,tilt,flightAssistOff,yawSimulated,yawActual,gravComp,dualPath,keys"
+-- Base CSV columns (always present, framework-level)
+local CSV_BASE_HEADER = "frame,ms,state,fps,actualX,actualZ,alt,velocityX,velocityY,velocityZ,desiredVelX,desiredVelZ,desiredVelY,subSteps,tilt,flightAssistOff,yawSimulated,yawActual,gravComp,dualPath,keys"
 
 --- Start recording flight data to CSV.
+--- Queries the active engine for additional columns via getDebugColumns().
 --- File is written to Zomboid user directory (PZ sandbox restriction).
 --- @return string|nil filename on success, nil on failure
 function HeliDebug.startRecording()
     if _recorder.active then
         HeliDebug.stopRecording()
+    end
+
+    -- Capture engine columns at recording start (fixed for this session)
+    local engineCols = HeliSimService.getDebugColumns()
+    _recorder.engineColumns = engineCols or {}
+
+    -- Build full header: base + engine-specific
+    local header = CSV_BASE_HEADER
+    for _, col in ipairs(_recorder.engineColumns) do
+        header = header .. "," .. col
     end
 
     -- Timestamp-based filename using epoch millis (avoids Calendar API dependency)
@@ -91,12 +102,12 @@ function HeliDebug.startRecording()
         return nil
     end
 
-    writer:write(CSV_HEADER .. "\n")
+    writer:write(header .. "\n")
     _recorder.writer = writer
     _recorder.active = true
     _recorder.frameCount = 0
     _recorder.filename = filename
-    print("[HEF] Recording started: " .. filename)
+    print("[HEF] Recording started: " .. filename .. " (" .. #_recorder.engineColumns .. " engine columns)")
     return filename
 end
 
@@ -131,35 +142,22 @@ end
 
 --- Write one frame of flight telemetry to the CSV.
 --- Called from HeliMove orchestrator every airborne frame when recording is active.
+--- Base columns are framework-level (always present). Engine columns are appended
+--- dynamically from getDebugState(), keyed by column names captured at startRecording().
 ---
---- Column reference:
----   frame     — monotonic frame counter (resets per recording session)
----   ms        — getTimestampMs() wall clock (milliseconds, for timing analysis)
----   state     — flight state string (warmup/airborne)
----   fps       — getAverageFPS() at this frame
----   actualX, actualZ    — actual position (PZ world X, Y)
----   alt                 — actual altitude (currentAltitude, Z-levels above ground datum)
----   velocityX,velocityY,velocityZ — Bullet velocity (X=world east, Y=height, Z=world south)
----   simPosX, simPosZ    — simulation model position (ideal trajectory)
----   simVelX, simVelZ    — simulation model velocity
----   errorX, errorZ      — position error (sim - actual, after tanh saturation)
----   desiredVelX, desiredVelZ — desired horizontal velocity (from tilt + heading)
----   desiredVelY         — desired vertical velocity (ascend/descend/hover target)
----   subSteps            — physics sub-steps this frame (integer, from accumulator)
----   tilt                — hasTiltInput flag (1=tilt active, 0=auto-leveling/stopped)
----   flightAssistOff     — flight assist off (1=free coast mode, 0=normal)
----   yawSimulated        — simulation yaw (degrees, _simYaw from HeliYawController)
----   yawActual           — actual yaw (degrees, vehicle:getAngleY())
----   gravComp            — gravity compensation active (1/0)
----   dualPath            — dual-path force system active (1/0)
----   keys                — key string (U/D/L/R/W/S/a/d or "-" for none)
-function HeliDebug.writeFlightFrame(data)
+--- Base column reference:
+---   frame, ms, state, fps, actualX, actualZ, alt, velocityX/Y/Z,
+---   desiredVelX/Z/Y, subSteps, tilt, flightAssistOff, yawSimulated,
+---   yawActual, gravComp, dualPath, keys
+--- Engine columns: whatever getDebugColumns() returned at recording start.
+function HeliDebug.writeFlightFrame(data, engineDebugState)
     if not _recorder.active or not _recorder.writer then return end
 
     _recorder.frameCount = _recorder.frameCount + 1
 
+    -- Base columns (framework-level, always present)
     local line = string.format(
-        "%d,%d,%s,%.1f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.2f,%.2f,%d,%d,%s",
+        "%d,%d,%s,%.1f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.2f,%.2f,%d,%d,%s",
         _recorder.frameCount,
         data.ms or 0,
         data.state or "?",
@@ -170,12 +168,6 @@ function HeliDebug.writeFlightFrame(data)
         data.velocityX or 0,
         data.velocityY or 0,
         data.velocityZ or 0,
-        data.simPosX or 0,
-        data.simPosZ or 0,
-        data.simVelX or 0,
-        data.simVelZ or 0,
-        data.errorX or 0,
-        data.errorZ or 0,
         data.desiredVelX or 0,
         data.desiredVelZ or 0,
         data.desiredVelY or 0,
@@ -187,6 +179,22 @@ function HeliDebug.writeFlightFrame(data)
         data.gravComp and 1 or 0,
         data.dualPath and 1 or 0,
         data.keys or "-")
+
+    -- Engine-specific columns (from getDebugState, in getDebugColumns order)
+    if engineDebugState and _recorder.engineColumns then
+        for _, col in ipairs(_recorder.engineColumns) do
+            local val = engineDebugState[col]
+            if type(val) == "number" then
+                line = line .. "," .. string.format("%.6f", val)
+            elseif type(val) == "boolean" then
+                line = line .. "," .. (val and "1" or "0")
+            elseif val ~= nil then
+                line = line .. "," .. tostring(val)
+            else
+                line = line .. ",0"
+            end
+        end
+    end
 
     _recorder.writer:write(line .. "\n")
 end

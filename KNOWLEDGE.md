@@ -83,17 +83,39 @@ Our forces never exceed ~13% of the limit. Safe headroom.
 
 ---
 
-## Vertical Thrust — Dual-Rate Gravity Compensation
+## Vertical Thrust
 
-`computeThrustForces()` handles vertical PD + gravity compensation. `getSubStepsThisFrame()` returns
+`computeThrustForce()` handles vertical PD + gravity compensation. `getSubStepsThisFrame()` returns
 two values: `(subSteps, physicsDelta)`.
 
-**Normal path (subSteps > 0):** Both PD and gravity scale by integer `subSteps`. This matches
-Bullet's discrete sub-step processing. Covers all frames at ≤90 FPS.
+**Force formula (no subSteps multiplier):**
+```lua
+thrustForceY = verticalGain * errorY * mass  -- PD term
+             + mass * gravity                -- gravity compensation
+```
+
+**Critical: NO `* subSteps` multiplier.** `Bullet.applyCentralForceToVehicle` is a sustained force
+that persists across all substeps within a single `stepSimulation()` call. Bullet integrates
+`force/mass * dt` per substep internally. Multiplying by subSteps caused a **subSteps² effect**:
+when subSteps alternated 1↔2 between frames, effective gain swung 1x↔4x, producing oscillation
+that prevented convergence to target velocity during horizontal flight.
+
+**Hover anti-creep clamp (asymmetric):** When `desiredVelY == 0` and `savedVelY >= 0` (hovering,
+not falling), thrust is clamped to gravity compensation. This prevents upward drift from P-term
+overshoot. When `savedVelY < 0` (falling during hover), full PD correction is allowed to arrest
+descent.
+
+**EMA velocity smoothing:** Raw `velY` is filtered with EMA (alpha=0.3) before feeding the PD
+controller. Bullet rigid body rocking during horizontal flight causes velY to oscillate frame-to-frame.
+The smoothed signal prevents the PD from chasing noise. FBW-internal (`FBWEngine.VERTICAL_VELOCITY_SMOOTHING`).
+
+**Adaptive gain:** FBW auto-tunes a gain multiplier by tracking `|smoothedVelY| / |targetVelY|`
+during active ascend/descend. Compensates for Bullet's hidden velocity damping (unknown native
+btRaycastVehicle internals that absorb ~70-85% of applied force). Only adapts when velocity has
+responded (> 10% of target). EMA at alpha=0.05, clamped 1.0-8.0x. FBW-internal state.
 
 **High FPS fallback (subSteps == 0, physicsDelta > 0):** At ≥100 FPS, some frames accumulate
-less than one full 0.01s sub-step. The old code skipped ALL forces on these frames, but Bullet's
-internal gravity acts continuously. Gravity compensation now uses fractional `physicsDelta / 0.01`
+less than one full 0.01s sub-step. Gravity compensation uses fractional `physicsDelta / 0.01`
 on these frames. PD correction is still skipped (negligible error at 120+ FPS intervals).
 
 ---
@@ -277,13 +299,32 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 
 ## Vehicle Script Modifications
 
-### Invisible Wheel (UH1BHuey.txt override)
-- Single invisible center wheel (FrontLeft at offset 0,−2.5,0), no model attached
-- Bypasses 0-wheel velocity dampener (wheelCount > 0 → velocity only capped above 34 Bullet/s)
-- Single center wheel eliminates asymmetric btRaycastVehicle ground contacts that caused torque/tilt drift with 4 spread wheels during descent
-- Zero suspension/friction (suspensionStiffness=0, wheelFriction=0)
+### Phantom Wheel (HEFWheelInjector.lua, runtime injection via script:Load)
+- Single invisible center wheel (`PhantomCenter` at offset 0,0,0), no model attached
+- Injected at `OnGameStart` into every HeliList helicopter with 0 wheels
+- **Sole purpose**: `getWheelCount() > 0` to bypass `updateVelocityMultiplier` 0.1x velocity kill
+- **All vehicle physics zeroed** to prevent btRaycastVehicle from fighting flight forces:
+  - `suspensionStiffness=0, suspensionCompression=0, suspensionDamping=0`
+  - `maxSuspensionTravelCm=0, suspensionRestLength=0`
+  - `rollInfluence=0, wheelFriction=0, stoppingMovementForce=0`
+- Wheel at offset Y=0 (chassis center) — prevents ground contact raycast hits at low altitude.
+  Previous offset Y=-2.5 caused the wheel to penetrate ground below ~1.0 z-levels, generating
+  btRaycastVehicle contact forces that capped vertical velocity at ~0.5 Bullet Y/s.
 
-### Other: `brakingForce=0`, `stoppingMovementForce=0`, `steeringClamp=0`
+### Ground/Airborne Transition Zone (FBWEngine.updateGround)
+- `TRANSITION_ZONE_BOTTOM=0.1, TRANSITION_ZONE_TOP=0.5` (z-levels above ground)
+- `AIRBORNE_MARGIN = TRANSITION_ZONE_TOP` — framework switches to `update()` at zone top
+- Blend factor `t = (heightAboveGround - BOTTOM) / (TOP - BOTTOM)`, clamped 0..1
+- **Liftoff (W key)**: vertical thrust via `FBWForceComputer.computeThrustForce` (same as airborne),
+  horizontal velocity-kill fades as `(1-t) * GROUND_VELOCITY_KILL`
+- **Transition zone (no W)**: full FBW vertical model (`FBWFlightModel.computeVerticalTarget`) for
+  S-key descent, hover, no-fuel fall. Landing zone taper applied. Horizontal kill fades with t.
+- **Pure ground (below zone)**: brute velocity kill on all axes
+- **Orientation hold**: `ctx.setAngles(FBWOrientation.toEuler())` during transition prevents
+  Bullet's native vehicle physics from flipping the helicopter
+- **`keepFlightState = true`** in transition zone: prevents HeliMove from resetting to STATE_INACTIVE,
+  preserving FBW sim model/orientation/error tracker across the ground↔airborne boundary
+- **Sim re-anchor**: `_reinitSim(posX, posZ)` each transition frame keeps sim warm for handoff
 
 For parameter reference and tuning, see [ADMIN.md](ADMIN.md).
 For project structure, API reference, and engine authoring guide, see [DEVELOPER.md](DEVELOPER.md).
@@ -304,11 +345,22 @@ For project structure, API reference, and engine authoring guide, see [DEVELOPER
    Bullet read timing relative to sub-step boundaries. The soft anchor uses position-delta
    speed (immune to stale reads) for its low-speed detection.
 
-3. **Visual jitter from setAngles teleport** — the teleport snaps orientation each frame.
-   At high speed, micro-differences between frames are visible. Not a force issue.
+3. **setAngles teleport resets linear velocity** — `setAngles()` calls `setWorldTransform()` →
+   `Bullet.teleportVehicle()`. Teleport resets linear velocity every frame orientation changes.
+   During yaw rotation (A/D keys), velY drops ~75% (from ~5.6 to ~1.5). During pitch/roll
+   changes (most flight frames), same effect. Causes:
+   - Vertical speed drop during yaw (confirmed in flight log analysis)
+   - Visual jitter at high speed (micro-differences between teleport frames)
+   - Reduced effective vertical rate during any orientation change
+   **Planned fix**: torque-based orientation control (dedicated branch exists). See
+   `project_hef_framework.md` knowledge doc for full implementation plan.
 
 4. **PZ grid Z vs Bullet altitude** — the helicopter is always on floor 0 in PZ's grid.
    Ghost mode prevents zombie interaction.
+
+5. **Turn drift reduced** — zeroing `stoppingMovementForce`, `wheelFriction`, and `rollInfluence`
+   in HEFWheelInjector (needed for vertical force fix) removed the subtle drift/slide feeling
+   when turning at speed. Expected to resolve with torque-based orientation control (issue 3).
 
 ## Removed Features
 

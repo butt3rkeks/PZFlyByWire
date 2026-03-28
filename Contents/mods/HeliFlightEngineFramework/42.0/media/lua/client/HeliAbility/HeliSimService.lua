@@ -134,3 +134,19 @@ end
 function HeliSimService.getInfo()
     return engine().getInfo()
 end
+
+-- Engine switching
+
+--- Switch active engine at runtime. Resets flight state on both old and new engine.
+--- @param name string Engine name (e.g., "FBW", "TRQ")
+--- @return string|nil Name if successful, nil if engine not registered
+function HeliSimService.switchEngine(name)
+    local eng = IFlightEngine.get(name)
+    if not eng then return nil end
+    if _activeEngine and _activeEngine.resetFlightState then
+        _activeEngine.resetFlightState()
+    end
+    _activeEngine = eng
+    _activeEngine.resetFlightState()
+    return name
+end

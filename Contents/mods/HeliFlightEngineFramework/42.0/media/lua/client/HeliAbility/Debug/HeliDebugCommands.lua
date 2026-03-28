@@ -186,6 +186,7 @@ commands["help"] = function(_)
     showInfo("--- HEF Chat Commands (engine: " .. (info and info.name or "?") .. ") ---")
     showInfo("/hef show    — display all current values")
     showInfo("/hef reset   — reset tunables to defaults")
+    showInfo("/hef engine [name] — show or switch flight engine")
     showInfo("/hef vel     — show current Bullet velocity")
     showInfo("/hef log     — toggle periodic logging (1/sec to console)")
     showInfo("/hef snap    — one-shot detailed state dump to chat")
@@ -215,6 +216,24 @@ commands["help"] = function(_)
     end
     if isRemoteClient() then
         showInfo("(MP mode: write commands require admin access)")
+    end
+end
+
+commands["engine"] = function(args)
+    if not args[1] then
+        local info = HeliSimService.getInfo()
+        local names = IFlightEngine.getRegisteredNames()
+        showValue("Active: " .. (info and info.name or "?"))
+        showInfo("Available: " .. table.concat(names, ", "))
+        return
+    end
+    local name = args[1]
+    local result = HeliSimService.switchEngine(name)
+    if result then
+        showSuccess("Switched to engine: " .. name)
+    else
+        showError("Engine '" .. name .. "' not registered.")
+        showInfo("Available: " .. table.concat(IFlightEngine.getRegisteredNames(), ", "))
     end
 end
 

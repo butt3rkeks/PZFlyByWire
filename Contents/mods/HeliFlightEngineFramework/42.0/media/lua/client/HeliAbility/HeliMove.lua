@@ -255,7 +255,7 @@ local function helicopterMovementUpdate()
     -- Read raw Bullet velocity directly (don't call getVelocity() again —
     -- it has stateful side effects that corrupt stale-read detection).
     if HeliDebug.isRecording() then
-        local dbg = HeliSimService.getDebugState()
+        local engineDebugState = HeliSimService.getDebugState()
         local recordingVelocity = vehicle:getLinearVelocity(Vector3f.new())
         HeliDebug.writeFlightFrame({
             ms          = getTimestampMs(),
@@ -267,12 +267,6 @@ local function helicopterMovementUpdate()
             velocityX   = HeliUtil.toLuaNum(recordingVelocity:x()),
             velocityY   = HeliUtil.toLuaNum(recordingVelocity:y()),
             velocityZ   = HeliUtil.toLuaNum(recordingVelocity:z()),
-            simPosX     = dbg.simPosX or 0,
-            simPosZ     = dbg.simPosZ or 0,
-            simVelX     = dbg.simVelX or 0,
-            simVelZ     = dbg.simVelZ or 0,
-            errorX      = dbg.errX or 0,
-            errorZ      = dbg.errZ or 0,
             desiredVelX = flightResult.desiredVelX or 0,
             desiredVelZ = flightResult.desiredVelZ or 0,
             desiredVelY = flightResult.targetVelY or 0,
@@ -284,7 +278,7 @@ local function helicopterMovementUpdate()
             gravComp    = flightResult.gravComp,
             dualPath    = _dualPathActive,
             keys        = keyStr or "-",
-        })
+        }, engineDebugState)
     end
 
 end
