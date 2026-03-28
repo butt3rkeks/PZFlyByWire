@@ -38,6 +38,11 @@ local PHANTOM_WHEEL = [[{
         radius = 0.300000,
         width = 0.200000,
     },
+    suspensionStiffness = 0,
+    suspensionCompression = 0,
+    suspensionDamping = 0,
+    maxSuspensionTravelCm = 0,
+    suspensionRestLength = 0,
 }]]
 
 local function injectPhantomWheelIntoWarThunderHelis()

@@ -86,10 +86,11 @@ function FBWForceComputer.computeThrustForce(desiredVelY, savedVelY, mass, verti
             local gravForce = mass * gravity * subSteps
             thrustForceY = thrustForceY + gravForce
 
-            -- Hover anti-creep: when target is zero (hover), clamp total thrust
-            -- so P-term overshoot can't push above pure gravity compensation.
-            -- This prevents the upward drift from high gain * subSteps overshoot.
-            if desiredVelY == 0 and thrustForceY > gravForce then
+            -- Hover anti-creep: when hovering and already moving upward (or stationary),
+            -- clamp thrust to gravity compensation to prevent P-term overshoot creep.
+            -- When moving downward (savedVelY < 0), allow full PD correction so the
+            -- helicopter can arrest descent (e.g. after releasing S key).
+            if desiredVelY == 0 and savedVelY >= 0 and thrustForceY > gravForce then
                 thrustForceY = gravForce
             end
         end

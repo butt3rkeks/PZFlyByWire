@@ -23,8 +23,8 @@ local FBW_PARAMS = {
     brake       = { ns = "FBW", field = "BrakingMultiplier",   default = 0.05,  min = 0.01,  max = 1.0,    desc = "Base inertia rate (0.05=1s, 0.10=0.5s)" },
     accel       = { ns = "FBW", field = "AccelMultiplier",     default = 1.5,   min = 0.1,   max = 10.0,   desc = "Acceleration inertia multiplier on brake" },
     decel       = { ns = "FBW", field = "DecelMultiplier",     default = 2.25,  min = 0.1,   max = 10.0,   desc = "Deceleration inertia multiplier on brake" },
-    ascend      = { ns = "FBW", field = "AscendSpeed",         default = 8.0,   min = 1.0,   max = 30.0,   desc = "Ascend speed (Bullet Y/s)" },
-    descend     = { ns = "FBW", field = "DescendSpeed",        default = 14.0,  min = 1.0,   max = 25.0,   desc = "Descend speed (Bullet Y/s)" },
+    ascend      = { ns = "FBW", field = "AscendSpeed",         default = 6.0,   min = 1.0,   max = 30.0,   desc = "Ascend speed (Bullet Y/s)" },
+    descend     = { ns = "FBW", field = "DescendSpeed",        default = 10.0,  min = 1.0,   max = 25.0,   desc = "Descend speed (Bullet Y/s)" },
     maxHorizontalSpeed = { ns = "FBW", field = "MaxHorizontalSpeed",  default = 90.0,  min = 10.0,  max = 1000.0, desc = "Max horizontal speed (m/s)" },
     yawRotationSpeed   = { ns = "FBW", field = "YawSpeed",            default = 0.7,   min = 0.1,   max = 5.0,    desc = "Yaw rotation speed (deg/frame at target FPS)" },
 

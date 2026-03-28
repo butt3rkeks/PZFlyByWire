@@ -184,7 +184,7 @@ HeliConfig.DIRECTION_COS_THRESHOLD = 0.001
 -- Tilt noise floor: minimum total tilt deviation (radians) from neutral to produce
 -- horizontal thrust. Below this, tilt is treated as noise. Full thrust ramps in
 -- over [floor, floor*2].
-HeliConfig.TILT_NOISE_FLOOR = math.rad(0.5)
+HeliConfig.TILT_NOISE_FLOOR = math.rad(0.25)
 
 -- Max thrust lead angle (degrees). Prevents pretzel trajectories during turns.
 HeliConfig.MAX_THRUST_LEAD = 30
@@ -203,6 +203,7 @@ HeliConfig.FA_OFF_DEADZONE = 1.5
 
 -- FA-off minimum damping speed (m/s): below this, damping is not applied.
 HeliConfig.FA_OFF_MIN_DAMPING_SPEED = 0.05
+
 
 -- Dual-path activation thresholds
 HeliConfig.DUAL_PATH_ERROR_THRESHOLD = 0.5
