@@ -34,7 +34,7 @@ local PHANTOM_WHEEL = [[{
     wheel PhantomCenter
     {
         front = TRUE,
-        offset = 0.000000 -2.500000 0.000000,
+        offset = 0.000000 0.000000 0.000000,
         radius = 0.300000,
         width = 0.200000,
     },

@@ -15,6 +15,15 @@ FBWEngine = {}
 -- so ascend/descend rate stays consistent during horizontal flight.
 FBWEngine.VERTICAL_VELOCITY_SMOOTHING = 0.3
 
+-- Adaptive gain: auto-tunes vertical PD gain to compensate for Bullet's
+-- hidden velocity damping. Tracks actual vs desired vertical velocity and
+-- adjusts a multiplier so observed rate matches the sandbox ascend/descend
+-- speed regardless of what Bullet does internally.
+FBWEngine.ADAPTIVE_GAIN_ALPHA   = 0.05   -- EMA rate for gain adaptation (slow, stable)
+FBWEngine.ADAPTIVE_GAIN_MIN     = 1.0    -- minimum multiplier (no less than base gain)
+FBWEngine.ADAPTIVE_GAIN_MAX     = 8.0    -- maximum multiplier (cap runaway)
+FBWEngine.ADAPTIVE_GAIN_DEADZONE = 0.3   -- don't adapt when |desiredVelY| < this
+
 -------------------------------------------------------------------------------------
 -- Engine state (coordination only — zero domain logic)
 -------------------------------------------------------------------------------------
@@ -24,6 +33,7 @@ local _flightAssistOff = false
 local _warmupCounter = 0
 local _simInitialized = false
 local _smoothedVelY = 0
+local _adaptiveGainMultiplier = 1.0
 
 -------------------------------------------------------------------------------------
 -- Toolkit instances (Core/ loads before Engines/, so globals are available)
@@ -50,6 +60,7 @@ function FBWEngine.resetFlightState()
     _warmupCounter = HeliConfig.GetWarmupFrames()
     _simInitialized = false
     _smoothedVelY = 0
+    _adaptiveGainMultiplier = 1.0
 
     FBWOrientation.reset()
     FBWYawController.reset()
@@ -199,8 +210,29 @@ function FBWEngine.update(ctx)
     local dualPathActive = FBWEngine.isWarmedUp() and
         (hasHInput or errMag > HeliConfig.DUAL_PATH_ERROR_THRESHOLD or actualHorizontalSpeed > HeliConfig.DUAL_PATH_SPEED_THRESHOLD)
 
-    -- 19. Vertical thrust (uses smoothed velY for stable PD output)
-    local verticalGain = HeliConfig.GetVerticalGain()
+    -- 19. Adaptive gain: track actual vs desired vertical velocity and adjust
+    -- a multiplier so the PD compensates for Bullet's hidden damping.
+    -- Only adapts during active ascend/descend (not hover).
+    local absTarget = math.abs(targetVelY)
+    if absTarget > FBWEngine.ADAPTIVE_GAIN_DEADZONE then
+        local absActual = math.abs(_smoothedVelY)
+        -- Only adapt once velocity has meaningfully responded (> 10% of target).
+        -- This prevents the multiplier from spiking to max on the first frames
+        -- of every W/S press when smoothedVelY is still near zero.
+        if absActual > absTarget * 0.1 then
+            -- Ratio of how much velocity we're achieving vs target.
+            -- < 1 means Bullet is eating force → need higher gain.
+            -- > 1 means overshooting → reduce gain.
+            local ratio = absActual / absTarget
+            local desired = math.min(1.0 / ratio, FBWEngine.ADAPTIVE_GAIN_MAX)
+            desired = math.max(desired, FBWEngine.ADAPTIVE_GAIN_MIN)
+            local a = FBWEngine.ADAPTIVE_GAIN_ALPHA
+            _adaptiveGainMultiplier = a * desired + (1.0 - a) * _adaptiveGainMultiplier
+        end
+    end
+
+    -- 19b. Vertical thrust (uses smoothed velY + adaptive gain)
+    local verticalGain = HeliConfig.GetVerticalGain() * _adaptiveGainMultiplier
     local gravity = HeliConfig.GetGravity()
     local verticalForce = FBWForceComputer.computeThrustForce(
         targetVelY, _smoothedVelY, ctx.mass, verticalGain, gravity,
