@@ -35,6 +35,15 @@ local _simInitialized = false
 local _smoothedVelY = 0
 local _adaptiveGainMultiplier = 1.0
 
+-- Debug state (persisted for getDebugState / recorder)
+local _lastDesiredVelX = 0
+local _lastDesiredVelZ = 0
+local _lastTargetVelY = 0
+local _lastAngleZ = 0
+local _lastAngleX = 0
+local _lastFwdX = 0
+local _lastFwdZ = 0
+
 -------------------------------------------------------------------------------------
 -- Toolkit instances (Core/ loads before Engines/, so globals are available)
 -------------------------------------------------------------------------------------
@@ -61,6 +70,13 @@ function FBWEngine.resetFlightState()
     _simInitialized = false
     _smoothedVelY = 0
     _adaptiveGainMultiplier = 1.0
+    _lastDesiredVelX = 0
+    _lastDesiredVelZ = 0
+    _lastTargetVelY = 0
+    _lastAngleZ = 0
+    _lastAngleX = 0
+    _lastFwdX = 0
+    _lastFwdZ = 0
 
     FBWOrientation.reset()
     FBWYawController.reset()
@@ -138,6 +154,10 @@ function FBWEngine.update(ctx)
     local fwdX, fwdZ = FBWOrientation.getForward()
     local angleZ = FBWOrientation.getBodyPitch()
     local angleX = FBWOrientation.getBodyRoll()
+    _lastAngleZ = angleZ
+    _lastAngleX = angleX
+    _lastFwdX = fwdX
+    _lastFwdZ = fwdZ
 
     -- 7-8. Wall pre-blocking + FBWFilters pipeline → desired horizontal velocity
     local posX = ctx.posX
@@ -202,6 +222,11 @@ function FBWEngine.update(ctx)
         landingFactor = math.max(landingFactor, HeliConfig.LANDING_MIN_SPEED_FACTOR)
         targetVelY = targetVelY * landingFactor
     end
+
+    -- Persist for debug
+    _lastDesiredVelX = desiredHX
+    _lastDesiredVelZ = desiredHZ
+    _lastTargetVelY = targetVelY
 
     -- 18. Dual-path activation
     local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxPositionError())
@@ -489,6 +514,10 @@ function FBWEngine.getDebugState()
         simVelX = simVelX, simVelZ = simVelZ,
         errX = errX, errZ = errZ,
         errRateX = errRateX, errRateZ = errRateZ,
+        desiredVelX = _lastDesiredVelX, desiredVelZ = _lastDesiredVelZ,
+        targetVelY = _lastTargetVelY,
+        angleZ = _lastAngleZ, angleX = _lastAngleX,
+        fwdX = _lastFwdX, fwdZ = _lastFwdZ,
     }
 end
 
