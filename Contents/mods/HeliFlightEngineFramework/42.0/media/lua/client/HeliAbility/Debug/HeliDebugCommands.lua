@@ -4,12 +4,28 @@
     Hooks ISChat.onCommandEntered to intercept /hef commands.
     Auto-discovers tunables from active engine via HeliSimService.getTunables().
     Changes are session-only.
+
+    Networking:
+    - SP/local host: all commands execute directly (isServer() is true)
+    - Dedicated MP client: write commands go through server for admin validation
+      (sendClientCommand → HEFServerCommands → sendServerCommand → OnServerCommand)
+    - Read-only commands (help/show/vel/log/snap/record) always run client-local
 ]]
 
-if isServer() then return end
-
 local ISChat = ISChat
+local MOD_ID = "HEF"
 local MOD_TAG = "[HEF]"
+
+--- True when we are the authority (SP, local host, or dedicated server process).
+--- Write commands execute directly without networking.
+local function isAuthority()
+    return isServer()
+end
+
+--- True when we are a remote MP client that must send write commands to the server.
+local function isRemoteClient()
+    return not isServer() and isClient()
+end
 
 -------------------------------------------------------------------------------------
 -- Chat message display
@@ -50,7 +66,117 @@ local function showSuccess(message)
 end
 
 -------------------------------------------------------------------------------------
--- Command handlers
+-- Write operations: direct in SP, networked in MP
+-------------------------------------------------------------------------------------
+
+--- Set a HeliConfig param. In MP, sends to server for admin validation + broadcast.
+--- @param shorthand string
+--- @param value number
+local function doSetParam(shorthand, value)
+    if isRemoteClient() then
+        sendClientCommand(MOD_ID, "SetParam", { param = shorthand, value = value })
+        showInfo("Sent " .. shorthand .. " = " .. tostring(value) .. " to server...")
+    else
+        local oldVal = HeliConfig.get(shorthand)
+        local clamped = HeliConfig.set(shorthand, value)
+        showSuccess(shorthand .. ": " .. string.format("%.2f", oldVal) ..
+            " -> " .. string.format("%.2f", clamped))
+    end
+end
+
+--- Set an engine tunable. In MP, sends to server for admin validation + broadcast.
+--- @param name string
+--- @param value number
+local function doSetTunable(name, value)
+    if isRemoteClient() then
+        sendClientCommand(MOD_ID, "SetTunable", { name = name, value = value })
+        showInfo("Sent " .. name .. " = " .. tostring(value) .. " to server...")
+    else
+        local tunables = HeliSimService.getTunables()
+        local oldVal = 0
+        if tunables then
+            for _, t in ipairs(tunables) do
+                if t.name == name then oldVal = t.value; break end
+            end
+        end
+        HeliSimService.setTunable(name, value)
+        local newVal = HeliSimService.getTunable(name)
+        showSuccess(name .. ": " .. string.format("%.2f", oldVal) ..
+            " -> " .. string.format("%.2f", newVal))
+    end
+end
+
+--- Reset all params and tunables. In MP, sends to server for admin validation + broadcast.
+local function doReset()
+    if isRemoteClient() then
+        sendClientCommand(MOD_ID, "Reset", {})
+        showInfo("Sent reset to server...")
+    else
+        HeliConfig.resetAll()
+        local tunables = HeliSimService.getTunables()
+        if tunables then
+            for _, t in ipairs(tunables) do
+                HeliSimService.setTunable(t.name, t.default)
+            end
+        end
+        showSuccess("All parameters reset to defaults.")
+    end
+end
+
+--- Execute an engine command. In MP, sends to server for admin validation + broadcast.
+--- @param name string
+--- @param argsStr string
+local function doEngineCommand(name, argsStr)
+    if isRemoteClient() then
+        sendClientCommand(MOD_ID, "EngineCmd", { name = name, cmdArgs = argsStr })
+        showInfo("Sent engine command '" .. name .. "' to server...")
+    else
+        local response = HeliSimService.executeCommand(name, argsStr)
+        if response then showInfo(response) end
+    end
+end
+
+-------------------------------------------------------------------------------------
+-- Server response handler (MP only)
+-------------------------------------------------------------------------------------
+
+Events.OnServerCommand.Add(function(module, command, args)
+    if module ~= MOD_ID then return end
+
+    if command == "ApplyParam" then
+        local clamped = HeliConfig.set(args.param, args.value)
+        showSuccess(args.param .. " -> " .. string.format("%.2f", clamped) ..
+            " (by " .. tostring(args.who) .. ")")
+
+    elseif command == "ApplyTunable" then
+        HeliSimService.setTunable(args.name, args.value)
+        local newVal = HeliSimService.getTunable(args.name)
+        showSuccess(args.name .. " -> " .. string.format("%.2f", newVal) ..
+            " (by " .. tostring(args.who) .. ")")
+
+    elseif command == "ApplyReset" then
+        HeliConfig.resetAll()
+        local tunables = HeliSimService.getTunables()
+        if tunables then
+            for _, t in ipairs(tunables) do
+                HeliSimService.setTunable(t.name, t.default)
+            end
+        end
+        showSuccess("All parameters reset to defaults (by " .. tostring(args.who) .. ")")
+
+    elseif command == "ApplyEngineCmd" then
+        local response = HeliSimService.executeCommand(args.name, args.cmdArgs)
+        if response then
+            showInfo(response .. " (by " .. tostring(args.who) .. ")")
+        end
+
+    elseif command == "Error" then
+        showError(args.message or "Unknown error")
+    end
+end)
+
+-------------------------------------------------------------------------------------
+-- Command handlers (read-only, always client-local)
 -------------------------------------------------------------------------------------
 
 local commands = {}
@@ -86,6 +212,9 @@ commands["help"] = function(_)
     for _, shorthand in ipairs(PARAM_ORDER) do
         local p = PARAMS[shorthand]
         showInfo("  " .. shorthand .. " — " .. p.desc .. " [default: " .. tostring(p.default) .. "]")
+    end
+    if isRemoteClient() then
+        showInfo("(MP mode: write commands require admin access)")
     end
 end
 
@@ -124,15 +253,7 @@ commands["show"] = function(_)
 end
 
 commands["reset"] = function(_)
-    HeliConfig.resetAll()
-    -- Reset engine tunables to defaults
-    local tunables = HeliSimService.getTunables()
-    if tunables then
-        for _, t in ipairs(tunables) do
-            HeliSimService.setTunable(t.name, t.default)
-        end
-    end
-    showSuccess("All parameters reset to defaults.")
+    doReset()
 end
 
 commands["vel"] = function(_)
@@ -260,11 +381,7 @@ ISChat["onCommandEntered"] = function(self)
                         if not value then
                             showError("Invalid number: " .. tostring(words[3]))
                         else
-                            local oldVal = tunableMatch.value
-                            HeliSimService.setTunable(subCommand, value)
-                            local newVal = HeliSimService.getTunable(subCommand)
-                            showSuccess(subCommand .. ": " .. string.format("%.2f", oldVal) ..
-                                " -> " .. string.format("%.2f", newVal))
+                            doSetTunable(subCommand, value)
                         end
                     end
                 else
@@ -279,10 +396,7 @@ ISChat["onCommandEntered"] = function(self)
                             if not value then
                                 showError("Invalid number: " .. tostring(words[3]))
                             else
-                                local oldVal = HeliConfig.get(subCommand)
-                                local clamped = HeliConfig.set(subCommand, value)
-                                showSuccess(subCommand .. ": " .. string.format("%.2f", oldVal) ..
-                                    " -> " .. string.format("%.2f", clamped))
+                                doSetParam(subCommand, value)
                             end
                         end
                     else
@@ -304,8 +418,7 @@ ISChat["onCommandEntered"] = function(self)
                                 if i > 3 then argsStr = argsStr .. " " end
                                 argsStr = argsStr .. words[i]
                             end
-                            local response = HeliSimService.executeCommand(subCommand, argsStr)
-                            if response then showInfo(response) end
+                            doEngineCommand(subCommand, argsStr)
                         else
                             showError("Unknown command: " .. subCommand)
                             showInfo("Type /hef help for available commands.")
