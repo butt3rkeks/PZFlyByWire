@@ -193,24 +193,49 @@ function TRQEngine.update(ctx)
     --    Desired yaw scalar from FBWOrientation (for scalar yaw PD).
     --    TRQTorqueController: tilt-decomposed pitch/roll + scalar yaw → torque.
     --
-    --    Euler normalization: safety net for tilt decomposition in the controller.
-    --    PZ's getAngleX/Z flip by ±180° when heading crosses ±90°. The quaternion
-    --    omega estimator is immune (uses quat diff), but the controller's tilt
-    --    decomposition still builds actQ from Euler, so normalization helps.
-    local actX, actY, actZ = ctx.angleX, ctx.angleY, ctx.angleZ
-    if math.abs(actX) > 120 and math.abs(actZ) > 120 then
-        actX = wrapAngle(actX + 180)
-        actY = -wrapAngle(180 + actY)
-        actZ = wrapAngle(actZ + 180)
-    end
+    --    Read actual up-vector directly from Bullet (vehicle:getUpVector).
+    --    Bypasses Euler angles entirely for tilt — no gimbal flip possible.
+    --    Euler Y (heading) is still used for scalar yaw PD (Y is continuous,
+    --    no flip at ±90° heading).
+    local actUpVec = vehicle:getUpVector(ctx.scratchVector)
+    local actUpX = HeliUtil.toLuaNum(actUpVec:x())
+    local actUpY = HeliUtil.toLuaNum(actUpVec:y())
+    local actUpZ = HeliUtil.toLuaNum(actUpVec:z())
+
+    -- Extract actual yaw from forward vector (same method as FBWOrientation.initFromVehicle).
+    -- Euler Y from getAngleY() can be unreliable during Euler flip (XYZ decomposition
+    -- Y range shifts). Forward vector projection is always correct.
+    local actFwdVec = vehicle:getForwardVector(ctx.scratchVector)
+    local actFwdX = HeliUtil.toLuaNum(actFwdVec:x())
+    local actFwdZ = HeliUtil.toLuaNum(actFwdVec:z())
+    local actYawDeg = math.deg(math.atan2(actFwdX, actFwdZ))
 
     local desQuat = FBWOrientation.getQuaternion()
-    local desYawDeg = FBWOrientation.getYaw()
+    local rawDesYawDeg = FBWOrientation.getYaw()
+
+    -- Rate-limit desired yaw: don't let desired race ahead of actual by more
+    -- than MAX_YAW_LEAD degrees. FBW's yaw system advances desired at ~42°/s
+    -- (constant rate from key input) but with torque the actual must accelerate
+    -- through inertia. If desired leads by >180°, wrapAngle flips direction and
+    -- the PD reverses → yaw explodes. Clamping prevents this.
+    local MAX_YAW_LEAD = 45
+    local yawLead = wrapAngle(rawDesYawDeg - actYawDeg)
+    local desYawDeg
+    if yawLead > MAX_YAW_LEAD then
+        desYawDeg = actYawDeg + MAX_YAW_LEAD
+    elseif yawLead < -MAX_YAW_LEAD then
+        desYawDeg = actYawDeg - MAX_YAW_LEAD
+    else
+        desYawDeg = rawDesYawDeg
+    end
+
+    -- Omega: Euler angles still needed for quaternion-based estimator
+    -- (it builds quaternion from Euler — unique, no flip issue)
     local dt = 1.0 / ctx.fps
-    local omegaX, omegaY, omegaZ = TRQAngularEstimator.update(actX, actY, actZ, dt)
+    local omegaX, omegaY, omegaZ = TRQAngularEstimator.update(ctx.angleX, ctx.angleY, ctx.angleZ, dt)
     local torqueX, torqueY, torqueZ, angErrMag = TRQTorqueController.compute(
         desQuat, desYawDeg,
-        actX, actY, actZ,
+        actUpX, actUpY, actUpZ, actYawDeg,
         omegaX, omegaY, omegaZ)
     TRQCoupleForce.apply(vehicle, torqueX, torqueY, torqueZ)
 
@@ -223,9 +248,9 @@ function TRQEngine.update(ctx)
     _lastOmegaY = omegaY
     _lastOmegaZ = omegaZ
     _lastAngErrMag = angErrMag
-    _lastActAngleX = actX  -- normalized (flip-free)
-    _lastActAngleY = actY
-    _lastActAngleZ = actZ
+    _lastActAngleX = ctx.angleX  -- raw Euler (for CSV readability)
+    _lastActAngleY = ctx.angleY
+    _lastActAngleZ = ctx.angleZ
     _lastDesAngleX = desAngleX
     _lastDesAngleY = desAngleY
     _lastDesAngleZ = desAngleZ
