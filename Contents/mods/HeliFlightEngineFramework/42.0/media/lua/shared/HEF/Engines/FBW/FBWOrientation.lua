@@ -130,6 +130,13 @@ function FBWOrientation.toEuler()
     return composeOrientation():toEuler()
 end
 
+--- Get composed orientation quaternion directly (no Euler round-trip).
+--- Avoids Euler branch flip at ±90° heading that corrupts fromEuler(toEuler()).
+--- @return Quaternion The composed yawQ * _tiltQuat quaternion
+function FBWOrientation.getQuaternion()
+    return composeOrientation()
+end
+
 --- Check if orientation has been initialized.
 --- @return boolean
 function FBWOrientation.isInitialized()

@@ -28,6 +28,9 @@ local TRQ_PARAMS = {
     -- Safety limits
     trqMaxTorque    = { default = 50000.0, min = 100.0, max = 500000.0, desc = "Max torque per axis (Nm)" },
 
+    -- Gyroscopic feedforward scale (0=disabled, 1=full cancellation)
+    trqGyroScale    = { default = 0.0, min = 0.0, max = 2.0, desc = "Gyroscopic feedforward scale (0=off, 1=full)" },
+
     -- Warmup
     trqWarmupFrames = { default = 20, min = 1, max = 120, desc = "Warmup frames before torque control activates" },
 }
@@ -35,7 +38,7 @@ local TRQ_PARAMS = {
 local TRQ_PARAM_ORDER = {
     "trqPitchPGain", "trqPitchDGain", "trqRollPGain", "trqRollDGain",
     "trqYawPGain", "trqYawDGain",
-    "trqCoupleOffset", "trqOmegaAlpha", "trqMaxTorque", "trqWarmupFrames",
+    "trqCoupleOffset", "trqOmegaAlpha", "trqMaxTorque", "trqGyroScale", "trqWarmupFrames",
 }
 
 HeliConfig.registerParams(TRQ_PARAMS, TRQ_PARAM_ORDER)
@@ -62,5 +65,7 @@ function HeliConfig.GetTrqCoupleOffset() return HeliConfig.get("trqCoupleOffset"
 function HeliConfig.GetTrqOmegaAlpha() return HeliConfig.get("trqOmegaAlpha") end
 --- @return number Max torque per axis
 function HeliConfig.GetTrqMaxTorque() return HeliConfig.get("trqMaxTorque") end
+--- @return number Gyroscopic feedforward scale (0=off, 1=full)
+function HeliConfig.GetTrqGyroScale() return HeliConfig.get("trqGyroScale") end
 --- @return number Warmup frames
 function HeliConfig.GetTrqWarmupFrames() return HeliConfig.get("trqWarmupFrames") end

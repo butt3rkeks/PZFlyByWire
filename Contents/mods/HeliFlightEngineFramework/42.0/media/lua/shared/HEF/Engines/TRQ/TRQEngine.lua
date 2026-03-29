@@ -22,6 +22,14 @@ TRQEngine.ADAPTIVE_GAIN_DEADZONE = 0.3
 
 -------------------------------------------------------------------------------------
 -- Engine state (mirrors FBWEngine)
+--- Wrap angle delta to [-180, +180].
+local function wrapAngle(d)
+    if d > 180 then d = d - 360
+    elseif d < -180 then d = d + 360
+    end
+    return d
+end
+
 -------------------------------------------------------------------------------------
 local _hasTiltInput = false
 local _hasHorizontalInput = false
@@ -146,6 +154,11 @@ end
 --- @return HEFUpdateResult
 function TRQEngine.update(ctx)
     local vehicle = ctx.vehicle
+
+    -- Ensure inertia is computed (handles mid-flight engine switch where
+    -- initFlight was never called because HeliMove skips warmup phase)
+    TRQTorqueController.initFromVehicle(vehicle)
+
     local keys = ctx.keys
     local fpsMultiplier = ctx.fpsMultiplier
     local heliType = ctx.heliType
@@ -176,16 +189,33 @@ function TRQEngine.update(ctx)
     end
 
     -- 5. TRQ: apply torque instead of setAngles
-    --    FBWOrientation holds the desired orientation.
-    --    TRQTorqueController computes PD torque from desired vs actual.
-    --    TRQCoupleForce applies it via offset impulses.
+    --    Desired quaternion direct from FBWOrientation (no Euler round-trip).
+    --    Desired yaw scalar from FBWOrientation (for scalar yaw PD).
+    --    TRQTorqueController: tilt-decomposed pitch/roll + scalar yaw → torque.
+    --
+    --    Euler normalization: safety net for tilt decomposition in the controller.
+    --    PZ's getAngleX/Z flip by ±180° when heading crosses ±90°. The quaternion
+    --    omega estimator is immune (uses quat diff), but the controller's tilt
+    --    decomposition still builds actQ from Euler, so normalization helps.
+    local actX, actY, actZ = ctx.angleX, ctx.angleY, ctx.angleZ
+    if math.abs(actX) > 120 and math.abs(actZ) > 120 then
+        actX = wrapAngle(actX + 180)
+        actY = -wrapAngle(180 + actY)
+        actZ = wrapAngle(actZ + 180)
+    end
+
+    local desQuat = FBWOrientation.getQuaternion()
+    local desYawDeg = FBWOrientation.getYaw()
     local dt = 1.0 / ctx.fps
-    local omegaX, omegaY, omegaZ = TRQAngularEstimator.update(ctx.angleX, ctx.angleY, ctx.angleZ, dt)
+    local omegaX, omegaY, omegaZ = TRQAngularEstimator.update(actX, actY, actZ, dt)
     local torqueX, torqueY, torqueZ, angErrMag = TRQTorqueController.compute(
-        ctx.angleX, ctx.angleY, ctx.angleZ, omegaX, omegaY, omegaZ)
+        desQuat, desYawDeg,
+        actX, actY, actZ,
+        omegaX, omegaY, omegaZ)
     TRQCoupleForce.apply(vehicle, torqueX, torqueY, torqueZ)
 
-    -- Persist for debug
+    -- Persist for debug (Euler for CSV readability, from toEuler for desired)
+    local desAngleX, desAngleY, desAngleZ = FBWOrientation.toEuler()
     _lastTorqueX = torqueX
     _lastTorqueY = torqueY
     _lastTorqueZ = torqueZ
@@ -193,13 +223,12 @@ function TRQEngine.update(ctx)
     _lastOmegaY = omegaY
     _lastOmegaZ = omegaZ
     _lastAngErrMag = angErrMag
-    _lastActAngleX = ctx.angleX
-    _lastActAngleY = ctx.angleY
-    _lastActAngleZ = ctx.angleZ
-    local _desX, _desY, _desZ = FBWOrientation.toEuler()
-    _lastDesAngleX = _desX
-    _lastDesAngleY = _desY
-    _lastDesAngleZ = _desZ
+    _lastActAngleX = actX  -- normalized (flip-free)
+    _lastActAngleY = actY
+    _lastActAngleZ = actZ
+    _lastDesAngleX = desAngleX
+    _lastDesAngleY = desAngleY
+    _lastDesAngleZ = desAngleZ
 
     -- 6. Read forward direction + body angles from desired orientation
     -- (FBW reads from FBWOrientation for the flight model — same here)
