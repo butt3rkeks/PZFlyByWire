@@ -16,7 +16,7 @@
 
 local FBW_PARAMS = {
     -- Sandbox-tunable (FBW.* namespace, persisted per-save)
-    gravity     = { ns = "FBW", field = "GravityEstimate",     default = 9.8,   min = 5.0,   max = 20.0,   desc = "Gravity (Bullet units/s^2)" },
+    gravity     = { ns = "FBW", field = "GravityEstimate",     default = 10.0,  min = 5.0,   max = 20.0,   desc = "Gravity (Bullet units/s^2)" },
     engineDeadCondition = { ns = "FBW", field = "EngineDeadCondition", default = 10,    min = 0,     max = 100,    desc = "Engine condition % for engine-dead" },
     engineDeadFallSpeed = { ns = "FBW", field = "EngineDeadFallSpeed", default = 35.0,  min = 3.0,   max = 60.0,   desc = "Engine-dead fall speed (Bullet Y/s)" },
     verticalGain        = { ns = "FBW", field = "ResponsivenessGain",  default = 8.0,   min = 1.0,   max = 40.0,   desc = "Vertical PD base gain (adaptive multiplier auto-tunes)" },
