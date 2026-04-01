@@ -30,6 +30,10 @@
 
 HEFWheelInjector = {}
 
+-- Phantom wheel values: near-zero but NOT zero. Bullet's btRaycastVehicle constraint
+-- solver can produce NaN/degenerate results with exact zeros (division by friction,
+-- zero-length suspension). Tiny epsilon values give the same "no effect" behavior
+-- without triggering numerical edge cases. (Insight from Black Moons / RCP mod.)
 local PHANTOM_WHEEL = [[{
     wheel PhantomCenter
     {
@@ -38,13 +42,13 @@ local PHANTOM_WHEEL = [[{
         radius = 0.300000,
         width = 0.200000,
     },
-    suspensionStiffness = 0,
-    suspensionCompression = 0,
-    suspensionDamping = 0,
-    maxSuspensionTravelCm = 0,
-    suspensionRestLength = 0,
+    suspensionStiffness = 0.001,
+    suspensionCompression = 0.001,
+    suspensionDamping = 0.001,
+    maxSuspensionTravelCm = 0.001,
+    suspensionRestLength = 0.001,
     rollInfluence = 0,
-    wheelFriction = 0,
+    wheelFriction = 0.001,
     stoppingMovementForce = 0,
 }]]
 
