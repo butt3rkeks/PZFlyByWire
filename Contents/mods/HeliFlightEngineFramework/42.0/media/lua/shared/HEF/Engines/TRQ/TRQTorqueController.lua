@@ -59,9 +59,20 @@ local _tiltOmegaX = 0   -- blended omega (what the PD actually uses)
 local _tiltOmegaZ = 0
 local _lastTiltTorqueX = 0  -- last frame's applied torque (for prediction)
 local _lastTiltTorqueZ = 0
+local _lastIwx = 1          -- last frame's heading-corrected inertia (for correct prediction)
+local _lastIwz = 1
 local _lastYawTorque = 0    -- last frame's yaw torque (for yaw omega prediction)
 local _predOmegaY = 0       -- predicted yaw omega (rad/s)
 local _prevYawRad = nil     -- previous frame's yaw angle (rad, for measurement)
+local _lastSinCos = 0       -- sin(heading)*cos(heading) from last frame (for coupling prediction)
+
+-- Cascaded rate controller state
+local _integralX = 0  -- inner loop I-term (disturbance rejection)
+local _integralZ = 0
+local _integralY = 0
+local _filtOmX = 0    -- low-pass filtered omega for inner P-term (reduces substep jitter)
+local _filtOmZ = 0
+local _filtOmY = 0
 
 -- Center of mass offset (Bullet coords, Y=up) for gravity torque feedforward
 local _comX = 0
@@ -187,29 +198,30 @@ end
 -------------------------------------------------------------------------------------
 
 --- Compute torque vector.
---- @param desQuat table Desired orientation quaternion {w, x, y, z}
+--- @param desUpX number Desired up-vector X (world frame, heading-independent from tilt quat)
+--- @param desUpY number Desired up-vector Y (world frame)
+--- @param desUpZ number Desired up-vector Z (world frame)
 --- @param desYawDeg number Desired yaw scalar (degrees)
 --- @param actUpX number Actual up-vector X (world frame, from vehicle:getUpVector)
 --- @param actUpY number Actual up-vector Y (world frame)
 --- @param actUpZ number Actual up-vector Z (world frame)
 --- @param actYawDeg number Actual yaw (degrees)
---- @param omegaY number Body-frame yaw angular velocity Y (deg/s, from quaternion estimator, unused — kept for interface compat)
+--- @param omegaY number Body-frame yaw angular velocity Y (deg/s, unused — kept for interface compat)
 --- @param dt number Frame time (seconds)
 --- @param subSteps number Number of Bullet substeps this frame (1 or 2 at 60fps)
 --- @return number torqueX World-frame
 --- @return number torqueY World-frame
 --- @return number torqueZ World-frame
 --- @return number angErrMag Error magnitude (rad)
-function TRQTorqueController.compute(desQuat, desYawDeg,
+function TRQTorqueController.compute(desUpX, desUpY, desUpZ, desYawDeg,
                                      actUpX, actUpY, actUpZ, actYawDeg,
                                      omegaY, dt, subSteps)
 
     -- === TILT ERROR via up-vector cross product (PX4 approach) ===
     -- Actual up-vector read directly from Bullet (vehicle:getUpVector).
     -- No Euler angles involved — immune to gimbal flip at any heading.
-    -- Desired up-vector extracted from orientation quaternion.
-
-    local desUpX, desUpY, desUpZ = quatUpVector(desQuat.w, desQuat.x, desQuat.y, desQuat.z)
+    -- Desired up-vector from tilt quaternion ONLY (no heading component).
+    -- This prevents heading lag from creating phantom tilt error during yaw.
 
     -- Cross product: actual_up × desired_up = rotation axis from actual to desired.
     -- This is the SO(3)-correct error direction (confirmed by aerospace literature).
@@ -279,11 +291,24 @@ function TRQTorqueController.compute(desQuat, desYawDeg,
     local physicsDt = nSteps * DT_SUBSTEP  -- actual physics time elapsed this frame
     local wOmX, wOmZ = 0, 0
 
-    -- Step 1: Advance prediction from last frame's applied torque
-    -- Torque acts for exactly 1 substep (cleared after). Prediction of omega
-    -- change from our torque is always torque/I * 0.01, independent of substep count.
-    _predOmegaX = _predOmegaX + (_lastTiltTorqueX / I_wx) * DT_SUBSTEP
-    _predOmegaZ = _predOmegaZ + (_lastTiltTorqueZ / I_wz) * DT_SUBSTEP
+    -- Step 1: Advance prediction from last frame's applied torque.
+    -- Uses LAST frame's inertia (not current) because the torque was applied at
+    -- last frame's heading. During yaw, heading changes ~1°/frame and I_wx can
+    -- change ~5000/frame — using the wrong inertia creates prediction drift.
+    --
+    -- Also includes pitch↔roll coupling from the off-diagonal inertia tensor:
+    --   invI[0][2] = sin(θ)*cos(θ)*(1/Iz - 1/Ix)
+    -- A pitch torque creates roll angular acceleration (and vice versa).
+    -- Without this, the prediction misses ~0.004 rad/s per substep of cross-axis
+    -- omega during simultaneous pitch+roll corrections.
+    local invIx = 1 / _Ix
+    local invIz = 1 / _Iz
+    local coupling = _lastSinCos * (invIz - invIx)  -- invI_world[0][2] at last frame's heading
+
+    -- Diagonal: omega_X += torqueX / I_wx, omega_Z += torqueZ / I_wz
+    -- Cross: omega_X += torqueZ * coupling, omega_Z += torqueX * coupling
+    _predOmegaX = _predOmegaX + (_lastTiltTorqueX / _lastIwx + _lastTiltTorqueZ * coupling) * DT_SUBSTEP
+    _predOmegaZ = _predOmegaZ + (_lastTiltTorqueZ / _lastIwz + _lastTiltTorqueX * coupling) * DT_SUBSTEP
 
     if _prevUpX ~= nil and physicsDt > 0 then
         -- Step 2: Measure omega from up-vector change over PHYSICS time
@@ -339,14 +364,89 @@ function TRQTorqueController.compute(desQuat, desYawDeg,
     end
     _prevYawRad = yawRad
 
-    -- PD in world frame
-    local P_tilt = HeliConfig.GetTrqPitchPGain()
-    local D_tilt = HeliConfig.GetTrqPitchDGain()
+    -- === CASCADED RATE CONTROLLER ===
+    -- Outer loop: position error → rate command (bounded)
+    -- Inner loop: rate error → torque (PI controller with integral for disturbance rejection)
+    --
+    -- Replaces the position PD which over-corrected because:
+    -- 1. P-term saw stale error (one frame behind, plus inertia delay)
+    -- 2. D-term had 13% substep jitter in omega estimate
+    -- 3. No integral → couldn't counteract persistent phantom torque
+    local P_outer = HeliConfig.GetTrqOuterPGain()
+    local maxRate = HeliConfig.GetTrqMaxRate()
+    local P_inner = HeliConfig.GetTrqInnerPGain()
+    local I_inner = HeliConfig.GetTrqInnerIGain()
+    local maxIntegral = HeliConfig.GetTrqMaxIntegral()
     local maxTorque = HeliConfig.GetTrqMaxTorque()
 
-    local torqueX = I_wx  * (P_tilt * worldErrX - D_tilt * wOmX)
-    local torqueY = I_yaw * (HeliConfig.GetTrqYawPGain() * errY - HeliConfig.GetTrqYawDGain() * wOmY)
-    local torqueZ = I_wz  * (P_tilt * worldErrZ - D_tilt * wOmZ)
+    -- Outer loop: position error → bounded rate command
+    local rateCmdX = clamp(P_outer * worldErrX, -maxRate, maxRate)
+    local rateCmdY = clamp(HeliConfig.GetTrqYawPGain() * errY, -maxRate, maxRate)
+    local rateCmdZ = clamp(P_outer * worldErrZ, -maxRate, maxRate)
+
+    -- Inner P-term uses PREDICTED omega (smooth, zero substep jitter).
+    -- The prediction advances from known applied torques — no measurement noise.
+    -- Its weakness (drift from external forces) is handled by the I-term.
+    -- I-term uses BLENDED omega (includes measurement) for disturbance tracking.
+    -- This separation eliminates the torque oscillation that plagued all previous
+    -- attempts: P-term is jitter-free, I-term is accurate but slow.
+    local rateErrX_P = rateCmdX - _predOmegaX
+    local rateErrY_P = rateCmdY - _predOmegaY
+    local rateErrZ_P = rateCmdZ - _predOmegaZ
+    local rateErrX = rateCmdX - wOmX  -- blended for integral
+    local rateErrY = rateCmdY - wOmY
+    local rateErrZ = rateCmdZ - wOmZ
+
+    -- Integral accumulation with conditional decay.
+    -- When error is large, the integral may carry stale bias from a previous
+    -- state (e.g., pre-tumble integral drives wrong direction after error flips).
+    -- Decay the integral proportionally to error magnitude — large error = fast decay
+    -- toward zero, small error = normal accumulation.
+    local intDt = dt
+    local decayRate = angErrMag * 2.0  -- at 0.5 rad error: decay factor = 1.0/s
+    local decayFactor = math.max(0, 1.0 - decayRate * intDt)
+
+    _integralX = _integralX * decayFactor + rateErrX * intDt
+    _integralY = _integralY * decayFactor + rateErrY * intDt
+    _integralZ = _integralZ * decayFactor + rateErrZ * intDt
+
+    _integralX = clamp(_integralX, -maxIntegral, maxIntegral)
+    _integralY = clamp(_integralY, -maxIntegral, maxIntegral)
+    _integralZ = clamp(_integralZ, -maxIntegral, maxIntegral)
+
+    local rawTorqueX = I_wx  * (P_inner * rateErrX_P + I_inner * _integralX)
+    local rawTorqueY = I_yaw * (P_inner * rateErrY_P + I_inner * _integralY)
+    local rawTorqueZ = I_wz  * (P_inner * rateErrZ_P + I_inner * _integralZ)
+
+    -- === PRIORITY-BASED TORQUE ALLOCATION ===
+    -- Tilt (X/Z) gets priority over yaw (Y). If total demand exceeds budget,
+    -- yaw is scaled down first. Tilt keeps the helicopter flying; yaw is cosmetic.
+    -- This prevents yaw deceleration from starving tilt correction.
+    local tiltDemand = abs(rawTorqueX) + abs(rawTorqueZ)
+    local yawDemand = abs(rawTorqueY)
+    local totalDemand = tiltDemand + yawDemand
+
+    local torqueX, torqueY, torqueZ
+
+    if totalDemand <= maxTorque then
+        -- Budget sufficient — no scaling needed
+        torqueX = rawTorqueX
+        torqueY = rawTorqueY
+        torqueZ = rawTorqueZ
+    elseif tiltDemand <= maxTorque then
+        -- Tilt fits, yaw gets the remainder
+        torqueX = rawTorqueX
+        torqueZ = rawTorqueZ
+        local yawBudget = maxTorque - tiltDemand
+        local yawScale = yawBudget / yawDemand
+        torqueY = rawTorqueY * yawScale
+    else
+        -- Even tilt alone exceeds budget — scale tilt to fit, zero yaw
+        local tiltScale = maxTorque / tiltDemand
+        torqueX = rawTorqueX * tiltScale
+        torqueZ = rawTorqueZ * tiltScale
+        torqueY = 0
+    end
 
     -- === GYROSCOPIC FEEDFORWARD (world frame, tunable, default OFF) ===
     local gyroScale = HeliConfig.GetTrqGyroScale()
@@ -359,19 +459,19 @@ function TRQTorqueController.compute(desQuat, desYawDeg,
         torqueZ = torqueZ + gyroScale * (wOmX * IwOmY - wOmY * IwOmX)
     end
 
-    torqueX = clamp(torqueX, -maxTorque, maxTorque)
-    torqueY = clamp(torqueY, -maxTorque, maxTorque)
-    torqueZ = clamp(torqueZ, -maxTorque, maxTorque)
-
-    -- Store torques for next frame's prediction
+    -- Store torques and inertia for next frame's prediction
     _lastTiltTorqueX = torqueX
     _lastTiltTorqueZ = torqueZ
     _lastYawTorque = torqueY
+    _lastIwx = I_wx
+    _lastIwz = I_wz
+    _lastSinCos = sinY * cosY  -- for next frame's coupling term
 
     -- Return torque + controller internals for debugging
     return torqueX, torqueY, torqueZ, angErrMag,
            desYawDeg, actYawDeg, errYDeg, wOmX, wOmY, wOmZ,
-           I_wx, I_wz
+           I_wx, I_wz,
+           rateCmdX, rateCmdZ, _integralX, _integralZ
 end
 
 --- @return number Ix, number Iy, number Iz, boolean valid
@@ -385,6 +485,9 @@ function TRQTorqueController.reset()
     _prevUpX = nil; _prevUpZ = nil
     _predOmegaX = 0; _predOmegaZ = 0
     _lastTiltTorqueX = 0; _lastTiltTorqueZ = 0
+    _lastIwx = 1; _lastIwz = 1; _lastSinCos = 0
     _tiltOmegaX = 0; _tiltOmegaZ = 0
+    _integralX = 0; _integralZ = 0; _integralY = 0
+    _filtOmX = 0; _filtOmZ = 0; _filtOmY = 0
     _lastYawTorque = 0; _predOmegaY = 0; _prevYawRad = nil
 end

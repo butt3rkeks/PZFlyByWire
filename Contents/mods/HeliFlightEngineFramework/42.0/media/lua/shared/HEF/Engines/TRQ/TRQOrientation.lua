@@ -104,6 +104,22 @@ function TRQOrientation.applyTilt(ax, az)
     end
 end
 
+--- Decay desired tilt toward level when no directional input.
+--- Uses SLERP toward identity quaternion at the given rate.
+--- @param rate number Decay speed (0-1 per frame, 0.05 = ~1s to level)
+function TRQOrientation.decayTiltToLevel(rate)
+    if not _tiltQuat then return end
+    -- SLERP toward identity: tiltQuat = lerp(tiltQuat, identity, rate)
+    -- For small angles, lerp ≈ slerp. Identity = (1,0,0,0).
+    local id = Quaternion.identity()
+    local t = math.min(rate, 1.0)
+    _tiltQuat.w = _tiltQuat.w + (id.w - _tiltQuat.w) * t
+    _tiltQuat.x = _tiltQuat.x + (id.x - _tiltQuat.x) * t
+    _tiltQuat.y = _tiltQuat.y + (id.y - _tiltQuat.y) * t
+    _tiltQuat.z = _tiltQuat.z + (id.z - _tiltQuat.z) * t
+    _tiltQuat:normalize()
+end
+
 --- Apply yaw delta to desired heading.
 --- @param ay number Yaw delta (degrees)
 function TRQOrientation.applyYaw(ay)
@@ -164,7 +180,20 @@ function TRQOrientation.toEuler()
     return composeOrientation():toEuler()
 end
 
---- Get composed desired orientation quaternion (for PD error computation).
+--- Get desired up-vector from TILT ONLY (no heading component).
+--- This is heading-independent: the PD tilt error uses this to avoid
+--- cross-coupling between yaw lag and tilt correction. Without this,
+--- heading lag during yaw creates phantom tilt error proportional to
+--- tilt_angle × sin(heading_lag), causing ~500-2000 Nm phantom torque.
+--- @return number upX, number upY, number upZ World-frame desired up-vector
+function TRQOrientation.getDesiredUpVector()
+    if not _tiltQuat then return 0, 1, 0 end
+    -- tiltQuat Y-axis = desired up-vector, heading-independent
+    local ux, uy, uz = _tiltQuat:vectorY()
+    return ux, uy, uz
+end
+
+--- Get composed desired orientation quaternion (includes heading, for debug/display).
 --- @return Quaternion
 function TRQOrientation.getQuaternion()
     return composeOrientation()

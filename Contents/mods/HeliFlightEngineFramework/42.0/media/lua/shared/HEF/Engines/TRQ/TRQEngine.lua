@@ -35,9 +35,11 @@ local _hasHorizontalInput = false
 local _flightAssistOff = false
 local _warmupCounter = 0
 local _simInitialized = false
+local _tireInflationSet = false
 -- _wasGroundMode removed: TRQ uses torque in ground mode (no setAngles discontinuity)
 local _smoothedVelY = 0
 local _adaptiveGainMultiplier = 1.0
+local _rampedTargetVelY = 0  -- smoothed vertical target (prevents 220kN force spikes)
 
 -- Debug state (persisted for getDebugState / recorder)
 local _lastTorqueX = 0
@@ -68,6 +70,16 @@ local _lastCtrlWOmY = 0
 local _lastCtrlWOmZ = 0
 local _lastEffIwx = 0
 local _lastEffIwz = 0
+local _lastCorrFX = 0
+local _lastCorrFZ = 0
+local _lastVertForce = 0
+local _lastPitchDelta = 0
+local _lastRollDelta = 0
+local _lastYawLead = 0
+local _lastRateCmdX = 0
+local _lastRateCmdZ = 0
+local _lastIntegralX = 0
+local _lastIntegralZ = 0
 -- TRQ-specific: desired vs actual angles for tracking analysis
 local _lastActUpX = 0
 local _lastActUpY = 0
@@ -107,6 +119,7 @@ function TRQEngine.resetFlightState()
     _warmupCounter = HeliConfig.GetTrqWarmupFrames()
     _simInitialized = false
     _smoothedVelY = 0
+    _rampedTargetVelY = 0
     _adaptiveGainMultiplier = 1.0
 
     _lastTorqueX = 0
@@ -123,6 +136,12 @@ function TRQEngine.resetFlightState()
     _lastCtrlWOmZ = 0
     _lastEffIwx = 0
     _lastEffIwz = 0
+    _lastCorrFX = 0; _lastCorrFZ = 0
+    _lastVertForce = 0
+    _lastPitchDelta = 0; _lastRollDelta = 0
+    _lastYawLead = 0
+    _lastRateCmdX = 0; _lastRateCmdZ = 0
+    _lastIntegralX = 0; _lastIntegralZ = 0
     _lastOmegaX = 0
     _lastOmegaY = 0
     _lastOmegaZ = 0
@@ -171,6 +190,10 @@ function TRQEngine.initFlight(vehicle)
 
     -- Compute inertia tensor from vehicle extents (once per vehicle)
     TRQTorqueController.initFromVehicle(vehicle)
+
+    -- Tire inflation will be set on first update() frame (deferred from here
+    -- because Bullet wheel may not exist yet at initFlight time).
+    _tireInflationSet = false
 end
 
 function TRQEngine.tickWarmup()
@@ -208,6 +231,19 @@ function TRQEngine.update(ctx)
     local freeMode = vehicle:getModData().AutoBalance == true
     _flightAssistOff = freeMode
 
+    -- 0. Set phantom wheel tire inflation (once, deferred from initFlight)
+    -- Must happen after Bullet has fully created the vehicle + wheel.
+    -- controlVehicle() reads tire inflation each frame; uninitialized (0.0)
+    -- causes a braking penalty on the phantom wheel.
+    if not _tireInflationSet then
+        -- Retry silently — wheel index 0 may not exist on the first frame
+        -- after engine switch. Succeeds once Bullet has fully created the wheel.
+        local ok = pcall(vehicle.setTireInflation, vehicle, 0, 1.0)
+        if ok then
+            _tireInflationSet = true
+        end
+    end
+
     -- 1. Init TRQOrientation from vehicle if not initialized
     if not TRQOrientation.isInitialized() then
         TRQOrientation.initFromVehicle(ctx.angleX, ctx.angleY, ctx.angleZ)
@@ -225,14 +261,65 @@ function TRQEngine.update(ctx)
     local actYawDeg = math.deg(math.atan2(actFwdX, actFwdZ))
     TRQOrientation.updateActualState(actUpX, actUpY, actUpZ, actFwdX, actFwdZ, actYawDeg)
 
-    -- 2. InputProcessor: keys → rotation deltas (reads ACTUAL body angles from Bullet)
-    local pitchDelta, yawDelta, rollDelta, isRotating = InputProcessor.computeRotationDeltas(
-        keys, fpsMultiplier, heliType, blocked, freeMode,
-        TRQOrientation.getBodyPitch(), TRQOrientation.getBodyRoll())
+    -- 2. Key input → rotation deltas (torque-tailored: NO auto-level in desired state)
+    --    Auto-leveling is inherent in the PD: desired=level → error=tilt → corrective torque.
+    --    InputProcessor's auto-level would create double-correction (desired moves AND PD corrects).
+    --    Body angle limits still use ACTUAL tilt (from Bullet) to cap input range.
+    local pitchDelta, yawDelta, rollDelta = 0, 0, 0
+    local isRotating = false
+
+    local basicAccelRate = HeliList[heliType].BasicAccelerationModifier or 0.15
+    local maxSpeed = HeliList[heliType].MaxSpeed or 0.3
+    if not HeliList[heliType].BasicAccelerationModifier then
+        basicAccelRate = 0.4; maxSpeed = 0.15
+    end
+    local angle_90 = math.rad(90)
+
+    -- Yaw (A/D)
+    if keys.a then yawDelta = HeliConfig.GetYawRotationSpeed() * fpsMultiplier; isRotating = true end
+    if keys.d then yawDelta = -HeliConfig.GetYawRotationSpeed() * fpsMultiplier; isRotating = true end
+
+    -- Pitch (UP/DOWN) — key input only, no auto-level
+    if keys.up and not keys.left and not keys.right then
+        local bodyPitch = TRQOrientation.getBodyPitch()
+        if bodyPitch < angle_90 + maxSpeed and not blocked.up then
+            pitchDelta = basicAccelRate * fpsMultiplier
+        end
+    elseif keys.down and not keys.left and not keys.right then
+        local bodyPitch = TRQOrientation.getBodyPitch()
+        if bodyPitch > angle_90 - maxSpeed and not blocked.down then
+            pitchDelta = -basicAccelRate * fpsMultiplier
+        end
+    end
+    -- NO auto-level on pitch release: PD handles return-to-level via desired=level target
+
+    -- Roll (LEFT/RIGHT) — key input only, no auto-level
+    if keys.left and not keys.up and not keys.down then
+        local bodyRoll = TRQOrientation.getBodyRoll()
+        if bodyRoll < angle_90 + maxSpeed and not blocked.left then
+            rollDelta = -basicAccelRate * fpsMultiplier
+        end
+    elseif keys.right and not keys.up and not keys.down then
+        local bodyRoll = TRQOrientation.getBodyRoll()
+        if bodyRoll > angle_90 - maxSpeed and not blocked.right then
+            rollDelta = basicAccelRate * fpsMultiplier
+        end
+    end
+    -- NO auto-level on roll release: PD handles return-to-level
 
     -- 3. Apply tilt + yaw to TRQOrientation (desired orientation)
     TRQOrientation.applyTilt(pitchDelta, rollDelta)
     TRQOrientation.applyYaw(yawDelta)
+
+    -- When no directional keys pressed, gently decay desired tilt back to level.
+    -- Without this, any tilt from key input persists forever after release.
+    -- Rate 3.0/s: at 60fps → 0.05/frame, at 30fps → 0.10/frame. Same real-time speed.
+    local hasTiltInput = keys.up or keys.down or keys.left or keys.right
+    if not hasTiltInput then
+        local decayPerSec = 3.0
+        local dt_decay = 1.0 / ctx.fps
+        TRQOrientation.decayTiltToLevel(1.0 - math.exp(-decayPerSec * dt_decay))
+    end
 
     -- 4. Yaw MPC: track intended heading, hard lock when not rotating
     local simYaw = TRQYawController.update(TRQOrientation.getYaw(), isRotating, yawDelta)
@@ -248,14 +335,13 @@ function TRQEngine.update(ctx)
     -- Actual vehicle state already read in step 1b (actUpX/Y/Z, actFwdX/Z, actYawDeg)
     -- Reuse those values here — no duplicate Bullet reads.
 
+    -- Desired up-vector from TILT ONLY (no heading component).
+    -- Using the full quaternion (yawQ * tiltQ) would include heading in the up-vector,
+    -- causing heading lag during yaw to appear as phantom tilt error.
+    local desUpX, desUpY, desUpZ = TRQOrientation.getDesiredUpVector()
+
+    -- Desired yaw from the full quaternion (heading IS needed for yaw PD).
     local desQuat = TRQOrientation.getQuaternion()
-    -- Extract desired yaw from desired QUATERNION using same atan2 as actual.
-    -- TRQOrientation.getYaw() returns _yawDeg which uses OPPOSITE convention
-    -- to getForwardVector's atan2: D key decreases _yawDeg but increases physical
-    -- heading. In FBW this doesn't matter (setAngles teleports). In TRQ the mismatch
-    -- causes the yaw error to grow instead of shrink → sustained oscillation.
-    -- Forward vector from desired quaternion: Z-axis (column 2 of rotation matrix)
-    -- = same atan2(fwdX, fwdZ) convention as actual heading from getForwardVector
     local desFwdX = 2 * (desQuat.x * desQuat.z + desQuat.w * desQuat.y)
     local desFwdZ = 1 - 2 * (desQuat.x * desQuat.x + desQuat.y * desQuat.y)
     local rawDesYawDeg = math.deg(math.atan2(desFwdX, desFwdZ))
@@ -282,9 +368,10 @@ function TRQEngine.update(ctx)
     local omegaX, omegaY, omegaZ = TRQAngularEstimator.update(ctx.angleX, ctx.angleY, ctx.angleZ, dt)
     local torqueX, torqueY, torqueZ, angErrMag,
           ctrlDesYaw, ctrlActYaw, ctrlErrY, ctrlWOmX, ctrlWOmY, ctrlWOmZ,
-          effIwx, effIwz =
+          effIwx, effIwz,
+          rateCmdX, rateCmdZ, integralX, integralZ =
         TRQTorqueController.compute(
-            desQuat, desYawDeg,
+            desUpX, desUpY, desUpZ, desYawDeg,
             actUpX, actUpY, actUpZ, actYawDeg,
             omegaY, dt, ctx.subSteps)
 
@@ -315,13 +402,19 @@ function TRQEngine.update(ctx)
     _lastCtrlWOmZ = ctrlWOmZ or 0
     _lastEffIwx = effIwx or 0
     _lastEffIwz = effIwz or 0
+    _lastPitchDelta = pitchDelta
+    _lastRollDelta = rollDelta
+    _lastRateCmdX = rateCmdX or 0
+    _lastRateCmdZ = rateCmdZ or 0
+    _lastIntegralX = integralX or 0
+    _lastIntegralZ = integralZ or 0
+    _lastYawLead = wrapAngle(rawDesYawDeg - actYawDeg)
     _lastActUpX = actUpX
     _lastActUpY = actUpY
     _lastActUpZ = actUpZ
-    local desUpQ = TRQOrientation.getQuaternion()
-    _lastDesUpX = 2 * (desUpQ.x * desUpQ.y + desUpQ.w * desUpQ.z)
-    _lastDesUpY = 1 - 2 * (desUpQ.x * desUpQ.x + desUpQ.z * desUpQ.z)
-    _lastDesUpZ = 2 * (desUpQ.y * desUpQ.z - desUpQ.w * desUpQ.x)
+    _lastDesUpX = desUpX  -- tilt-only up-vector (heading-independent)
+    _lastDesUpY = desUpY
+    _lastDesUpZ = desUpZ
     _lastActAngleX = ctx.angleX  -- raw Euler (for CSV readability)
     _lastActAngleY = ctx.angleY
     _lastActAngleZ = ctx.angleZ
@@ -346,8 +439,8 @@ function TRQEngine.update(ctx)
         TRQTiltResolver.resolve(angleZ, angleX, blocked, fwdX, fwdZ, posX, posZ)
 
     -- 9. Tilt/input flags
-    local noiseFloor = HeliConfig.TILT_NOISE_FLOOR
-    local noInput = (totalTiltRad < noiseFloor * 2) or (totalSpeed < HeliConfig.NO_INPUT_SPEED_THRESHOLD)
+    local noiseFloor = HeliConfig.GetTrqTiltNoiseFloor()
+    local noInput = (totalTiltRad < noiseFloor * 2) or (totalSpeed < HeliConfig.GetTrqNoInputSpeedThreshold())
     local hasHInput = not noInput
     _hasTiltInput = hasHInput
     _hasHorizontalInput = hasHInput
@@ -369,7 +462,8 @@ function TRQEngine.update(ctx)
     local fps = ctx.fps
     local deltaTime = 1.0 / fps
     local baseBrake = HeliConfig.GetBrake()
-    local effectiveInertia = baseBrake * (hasHInput and HeliConfig.GetAccel() or HeliConfig.GetDecel())
+    local trqSimFactor = HeliConfig.GetTrqSimInertiaFactor()
+    local effectiveInertia = baseBrake * (hasHInput and HeliConfig.GetAccel() or HeliConfig.GetDecel()) * trqSimFactor
 
     -- 12-14. Sim advance + heading reanchor + soft anchor
     SimController.advanceAndAnchor(_sim, _errorTracker, desiredHX, desiredHZ,
@@ -390,14 +484,24 @@ function TRQEngine.update(ctx)
     _smoothedVelY = alpha * velY + (1.0 - alpha) * _smoothedVelY
 
     -- 17. Vertical target
-    local targetVelY, gravComp, vBraking, engineDead = FlightModel.computeVerticalTarget(ctx, freeMode)
+    local rawTargetVelY, gravComp, vBraking, engineDead = FlightModel.computeVerticalTarget(ctx, freeMode)
 
     -- Landing zone taper
-    if targetVelY < 0 and currentAltitude < groundLevelZ + HeliConfig.LANDING_ZONE_HEIGHT then
-        local landingFactor = math.max((currentAltitude - groundLevelZ) / HeliConfig.LANDING_ZONE_HEIGHT, 0)
-        landingFactor = math.max(landingFactor, HeliConfig.LANDING_MIN_SPEED_FACTOR)
-        targetVelY = targetVelY * landingFactor
+    if rawTargetVelY < 0 and currentAltitude < groundLevelZ + HeliConfig.GetTrqLandingZoneHeight() then
+        local landingFactor = math.max((currentAltitude - groundLevelZ) / HeliConfig.GetTrqLandingZoneHeight(), 0)
+        landingFactor = math.max(landingFactor, HeliConfig.GetTrqLandingMinSpeedFactor())
+        rawTargetVelY = rawTargetVelY * landingFactor
     end
+
+    -- Ramp the vertical target instead of stepping it instantly.
+    -- FBW teleports orientation so a 220kN force spike from targetVelY jumping 0→-10
+    -- doesn't cause tilt. TRQ's physics body gets hit by this spike, and any asymmetry
+    -- in Bullet's response shows up as phantom tilt. Ramping over ~0.5s limits the peak
+    -- force to ~22kN — gentle enough for the torque PD to maintain orientation.
+    local rampRate = 4.0  -- reaches ~98% of target in 1 second (1 - e^(-4*1))
+    local dt_ramp = 1.0 / ctx.fps
+    _rampedTargetVelY = _rampedTargetVelY + (rawTargetVelY - _rampedTargetVelY) * (1.0 - math.exp(-rampRate * dt_ramp))
+    local targetVelY = _rampedTargetVelY
 
     -- Persist flight model outputs for debug
     _lastDesiredHX = desiredHX
@@ -409,7 +513,7 @@ function TRQEngine.update(ctx)
     local errMag = math.sqrt(errX * errX + errZ * errZ)
     local actualHorizontalSpeed = VelocityUtil.horizontalSpeed(velX, velZ)
     local dualPathActive = TRQEngine.isWarmedUp() and
-        (hasHInput or errMag > HeliConfig.DUAL_PATH_ERROR_THRESHOLD or actualHorizontalSpeed > HeliConfig.DUAL_PATH_SPEED_THRESHOLD)
+        (hasHInput or errMag > HeliConfig.GetTrqDualPathErrorThreshold() or actualHorizontalSpeed > HeliConfig.GetTrqDualPathSpeedThreshold())
 
     -- 19. Adaptive gain
     local absTarget = math.abs(targetVelY)
@@ -430,6 +534,7 @@ function TRQEngine.update(ctx)
     local verticalForce = ForceComputer.computeThrustForce(
         targetVelY, _smoothedVelY, ctx.mass, verticalGain, gravity,
         ctx.subSteps, ctx.physicsDelta, gravComp)
+    _lastVertForce = verticalForce
     if verticalForce ~= 0 then
         ctx.applyForce(0, verticalForce, 0)
     end
@@ -508,8 +613,10 @@ function TRQEngine.updateGround(ctx)
     local actYawDeg = math.deg(math.atan2(actFwdX, actFwdZ))
     TRQOrientation.updateActualState(actUpX, actUpY, actUpZ, actFwdX, actFwdZ, actYawDeg)
 
+    -- Desired up-vector from tilt only (heading-independent)
+    local desUpX, desUpY, desUpZ = TRQOrientation.getDesiredUpVector()
+    -- Desired yaw from full quaternion
     local desQuat = TRQOrientation.getQuaternion()
-    -- Extract desired yaw from quaternion (same atan2 convention as actual)
     local desFwdX = 2 * (desQuat.x * desQuat.z + desQuat.w * desQuat.y)
     local desFwdZ = 1 - 2 * (desQuat.x * desQuat.x + desQuat.y * desQuat.y)
     local desYawDeg = math.deg(math.atan2(desFwdX, desFwdZ))
@@ -517,13 +624,15 @@ function TRQEngine.updateGround(ctx)
     local dt = 1.0 / ctx.fps
     local omegaX, omegaY, omegaZ = TRQAngularEstimator.update(ctx.angleX, ctx.angleY, ctx.angleZ, dt)
     local torqueX, torqueY, torqueZ = TRQTorqueController.compute(
-        desQuat, desYawDeg,
+        desUpX, desUpY, desUpZ, desYawDeg,
         actUpX, actUpY, actUpZ, actYawDeg,
         omegaY, dt, ctx.subSteps)
 
-    local subStepScale = math.max(ctx.subSteps, 1)
-    TRQCoupleForce.apply(vehicle,
-        torqueX * subStepScale, torqueY * subStepScale, torqueZ * subStepScale)
+    -- NO substep multiplier — same as airborne mode. The parametric excitation bug
+    -- (alternating 1/2 substeps create ±100% gain variation) was fixed in airborne
+    -- but this ground mode path was missed. Couple forces act for exactly one 0.01s
+    -- substep regardless of frame substep count.
+    TRQCoupleForce.apply(vehicle, torqueX, torqueY, torqueZ)
 
     -- Sim re-anchor during transition
     if inTransition then
@@ -540,7 +649,7 @@ function TRQEngine.updateGround(ctx)
             local thrustY = ForceComputer.computeThrustForce(
                 ascendSpeed, velY, mass, verticalGain, gravity,
                 ctx.subSteps, ctx.physicsDelta, true)
-            local groundHold = (1.0 - t) * HeliConfig.GROUND_VELOCITY_KILL
+            local groundHold = (1.0 - t) * HeliConfig.GetTrqGroundVelocityKill()
             ctx.applyForce(
                 -velX * mass * groundHold,
                 thrustY,
@@ -550,8 +659,8 @@ function TRQEngine.updateGround(ctx)
 
     elseif inTransition then
         local groundVelMag = math.abs(velX) + math.abs(velY) + math.abs(velZ)
-        if groundVelMag > HeliConfig.GROUND_VELOCITY_THRESHOLD then
-            local killFactor = HeliConfig.GROUND_VELOCITY_KILL * (1.0 - t)
+        if groundVelMag > HeliConfig.GetTrqGroundVelocityThreshold() then
+            local killFactor = HeliConfig.GetTrqGroundVelocityKill() * (1.0 - t)
             ctx.applyForce(
                 -velX * mass * killFactor,
                 0,
@@ -560,9 +669,9 @@ function TRQEngine.updateGround(ctx)
         if ctx.subSteps > 0 then
             local freeMode = ctx.vehicle:getModData().AutoBalance == true
             local targetVelY, gravComp = FlightModel.computeVerticalTarget(ctx, freeMode)
-            if targetVelY < 0 and ctx.currentAltitude < ctx.groundLevelZ + HeliConfig.LANDING_ZONE_HEIGHT then
-                local landingFactor = math.max((ctx.currentAltitude - ctx.groundLevelZ) / HeliConfig.LANDING_ZONE_HEIGHT, 0)
-                landingFactor = math.max(landingFactor, HeliConfig.LANDING_MIN_SPEED_FACTOR)
+            if targetVelY < 0 and ctx.currentAltitude < ctx.groundLevelZ + HeliConfig.GetTrqLandingZoneHeight() then
+                local landingFactor = math.max((ctx.currentAltitude - ctx.groundLevelZ) / HeliConfig.GetTrqLandingZoneHeight(), 0)
+                landingFactor = math.max(landingFactor, HeliConfig.GetTrqLandingMinSpeedFactor())
                 targetVelY = targetVelY * landingFactor
             end
             local verticalGain = HeliConfig.GetVerticalGain()
@@ -575,11 +684,11 @@ function TRQEngine.updateGround(ctx)
 
     else
         local groundVelMag = math.abs(velX) + math.abs(velY) + math.abs(velZ)
-        if groundVelMag > HeliConfig.GROUND_VELOCITY_THRESHOLD then
+        if groundVelMag > HeliConfig.GetTrqGroundVelocityThreshold() then
             ctx.applyForce(
-                -velX * mass * HeliConfig.GROUND_VELOCITY_KILL,
-                -velY * mass * HeliConfig.GROUND_VELOCITY_KILL,
-                -velZ * mass * HeliConfig.GROUND_VELOCITY_KILL)
+                -velX * mass * HeliConfig.GetTrqGroundVelocityKill(),
+                -velY * mass * HeliConfig.GetTrqGroundVelocityKill(),
+                -velZ * mass * HeliConfig.GetTrqGroundVelocityKill())
         end
     end
 
@@ -601,10 +710,12 @@ function TRQEngine.applyCorrectionForces(cctx)
     local fx, fz = ForceComputer.computeCorrectionForce(
         errX, errZ, errRateX, errRateZ, errMag,
         HeliConfig.GetPositionProportionalGain(), HeliConfig.GetPositionDerivativeGain(),
-        cctx.velX, cctx.velZ, cctx.mass, HeliConfig.VEL_FORCE_FACTOR,
+        cctx.velX, cctx.velZ, cctx.mass, HeliConfig.GetTrqVelForceFactor(),
         HeliConfig.GetFinalStopDampingGain(), _flightAssistOff,
-        HeliConfig.FA_OFF_DEADZONE, HeliConfig.FA_OFF_MIN_DAMPING_SPEED)
+        HeliConfig.GetTrqFaOffDeadzone(), HeliConfig.GetTrqFaOffMinDamping())
 
+    _lastCorrFX = fx
+    _lastCorrFZ = fz
     cctx.applyForce(fx, 0, fz)
 end
 
@@ -700,6 +811,11 @@ local DEBUG_COLUMNS = {
     "ctrlWOmX", "ctrlWOmY", "ctrlWOmZ",
     -- Heading-corrected inertia
     "effIwx", "effIwz",
+    -- Torque pipeline diagnostics
+    "corrFX", "corrFZ", "vertForce",
+    "pitchDelta", "rollDelta", "yawLead",
+    -- Rate controller internals
+    "rateCmdX", "rateCmdZ", "integralX", "integralZ",
 }
 
 function TRQEngine.getDebugColumns()
@@ -735,6 +851,10 @@ function TRQEngine.getDebugState()
         ctrlDesYaw = _lastCtrlDesYaw, ctrlActYaw = _lastCtrlActYaw, ctrlErrY = _lastCtrlErrY,
         ctrlWOmX = _lastCtrlWOmX, ctrlWOmY = _lastCtrlWOmY, ctrlWOmZ = _lastCtrlWOmZ,
         effIwx = _lastEffIwx, effIwz = _lastEffIwz,
+        corrFX = _lastCorrFX, corrFZ = _lastCorrFZ, vertForce = _lastVertForce,
+        pitchDelta = _lastPitchDelta, rollDelta = _lastRollDelta, yawLead = _lastYawLead,
+        rateCmdX = _lastRateCmdX, rateCmdZ = _lastRateCmdZ,
+        integralX = _lastIntegralX, integralZ = _lastIntegralZ,
         -- Inertia (not in columns — available via /hef inertia command)
         Ix = Ix, Iy = Iy, Iz = Iz, inertiaValid = inertiaValid,
     }
