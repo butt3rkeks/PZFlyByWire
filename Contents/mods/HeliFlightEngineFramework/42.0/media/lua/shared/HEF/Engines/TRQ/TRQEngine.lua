@@ -36,6 +36,7 @@ local _hasHorizontalInput = false
 local _flightAssistOff = false
 local _warmupCounter = 0
 local _simInitialized = false
+-- _wasGroundMode removed: TRQ uses torque in ground mode (no setAngles discontinuity)
 local _smoothedVelY = 0
 local _adaptiveGainMultiplier = 1.0
 
@@ -55,6 +56,19 @@ local _lastAngleZ = 0
 local _lastAngleX = 0
 local _lastFwdX = 0
 local _lastFwdZ = 0
+-- Body-frame torques (what couple forces actually receive)
+local _lastBodyTorqueX = 0
+local _lastBodyTorqueY = 0
+local _lastBodyTorqueZ = 0
+-- Controller internals (for diagnosing sign issues)
+local _lastCtrlDesYaw = 0
+local _lastCtrlActYaw = 0
+local _lastCtrlErrY = 0
+local _lastCtrlWOmX = 0
+local _lastCtrlWOmY = 0
+local _lastCtrlWOmZ = 0
+local _lastEffIwx = 0
+local _lastEffIwz = 0
 -- TRQ-specific: desired vs actual angles for tracking analysis
 local _lastActUpX = 0
 local _lastActUpY = 0
@@ -99,6 +113,17 @@ function TRQEngine.resetFlightState()
     _lastTorqueX = 0
     _lastTorqueY = 0
     _lastTorqueZ = 0
+    _lastBodyTorqueX = 0
+    _lastBodyTorqueY = 0
+    _lastBodyTorqueZ = 0
+    _lastCtrlDesYaw = 0
+    _lastCtrlActYaw = 0
+    _lastCtrlErrY = 0
+    _lastCtrlWOmX = 0
+    _lastCtrlWOmY = 0
+    _lastCtrlWOmZ = 0
+    _lastEffIwx = 0
+    _lastEffIwz = 0
     _lastOmegaX = 0
     _lastOmegaY = 0
     _lastOmegaZ = 0
@@ -167,6 +192,9 @@ end
 function TRQEngine.update(ctx)
     local vehicle = ctx.vehicle
 
+    -- No ground→airborne omega reset needed: TRQ uses torque in ground mode
+    -- (same PD, no setAngles), so there's no velocity discontinuity at transition.
+
     -- Ensure inertia is computed (handles mid-flight engine switch where
     -- initFlight was never called because HeliMove skips warmup phase)
     TRQTorqueController.initFromVehicle(vehicle)
@@ -223,7 +251,16 @@ function TRQEngine.update(ctx)
     local actYawDeg = math.deg(math.atan2(actFwdX, actFwdZ))
 
     local desQuat = FBWOrientation.getQuaternion()
-    local rawDesYawDeg = FBWOrientation.getYaw()
+    -- Extract desired yaw from desired QUATERNION using same atan2 as actual.
+    -- FBWOrientation.getYaw() returns _yawDeg which uses OPPOSITE convention
+    -- to getForwardVector's atan2: D key decreases _yawDeg but increases physical
+    -- heading. In FBW this doesn't matter (setAngles teleports). In TRQ the mismatch
+    -- causes the yaw error to grow instead of shrink → sustained oscillation.
+    -- Forward vector from desired quaternion: Z-axis (column 2 of rotation matrix)
+    -- = same atan2(fwdX, fwdZ) convention as actual heading from getForwardVector
+    local desFwdX = 2 * (desQuat.x * desQuat.z + desQuat.w * desQuat.y)
+    local desFwdZ = 1 - 2 * (desQuat.x * desQuat.x + desQuat.y * desQuat.y)
+    local rawDesYawDeg = math.deg(math.atan2(desFwdX, desFwdZ))
 
     -- Rate-limit desired yaw: don't let desired race ahead of actual by more
     -- than MAX_YAW_LEAD degrees. FBW's yaw system advances desired at ~42°/s
@@ -245,28 +282,41 @@ function TRQEngine.update(ctx)
     -- (it builds quaternion from Euler — unique, no flip issue)
     local dt = 1.0 / ctx.fps
     local omegaX, omegaY, omegaZ = TRQAngularEstimator.update(ctx.angleX, ctx.angleY, ctx.angleZ, dt)
-    local torqueX, torqueY, torqueZ, angErrMag = TRQTorqueController.compute(
-        desQuat, desYawDeg,
-        actUpX, actUpY, actUpZ, actYawDeg,
-        omegaX, omegaY, omegaZ)
-    -- Scale torque by substep count. Forces applied via applyImpulseGeneric are
-    -- drained from the queue on the FIRST substep only. Bullet clears forces after
-    -- each stepSimulation. At 60fps (~1.67 substeps/frame), our torque only acts
-    -- for 0.01s out of 0.0167s → 60% effective. Multiplying by subSteps makes the
-    -- angular velocity change per frame independent of frame rate.
-    -- (FBW doesn't need this because adaptive gain auto-tunes the multiplier.)
-    local subStepScale = math.max(ctx.subSteps, 1)
-    TRQCoupleForce.apply(vehicle, torqueX * subStepScale, torqueY * subStepScale, torqueZ * subStepScale)
+    local torqueX, torqueY, torqueZ, angErrMag,
+          ctrlDesYaw, ctrlActYaw, ctrlErrY, ctrlWOmX, ctrlWOmY, ctrlWOmZ,
+          effIwx, effIwz =
+        TRQTorqueController.compute(
+            desQuat, desYawDeg,
+            actUpX, actUpY, actUpZ, actYawDeg,
+            omegaY, dt)
 
-    -- Persist for debug (Euler for CSV readability, from toEuler for desired)
+    -- NO substep multiplier. The force acts for one 0.01s substep regardless of
+    -- frame substep count. FBW KNOWLEDGE.md: "Multiplying by subSteps caused a
+    -- subSteps² effect" — the alternating 1/2 substeps create ±100% gain variation
+    -- that pumps energy into tilt oscillation (parametric excitation). PD gains are
+    -- tuned for the actual per-substep response instead.
+    TRQCoupleForce.apply(vehicle, torqueX, torqueY, torqueZ)
+
+    -- Persist for debug
     local desAngleX, desAngleY, desAngleZ = FBWOrientation.toEuler()
-    _lastTorqueX = torqueX
+    _lastTorqueX = torqueX  -- world-frame (= actual applied torque)
     _lastTorqueY = torqueY
     _lastTorqueZ = torqueZ
+    _lastBodyTorqueX = torqueX  -- same as world (uniform inertia, no body transform)
+    _lastBodyTorqueY = torqueY
+    _lastBodyTorqueZ = torqueZ
     _lastOmegaX = omegaX
     _lastOmegaY = omegaY
     _lastOmegaZ = omegaZ
     _lastAngErrMag = angErrMag
+    _lastCtrlDesYaw = ctrlDesYaw or 0
+    _lastCtrlActYaw = ctrlActYaw or 0
+    _lastCtrlErrY = ctrlErrY or 0
+    _lastCtrlWOmX = ctrlWOmX or 0
+    _lastCtrlWOmY = ctrlWOmY or 0
+    _lastCtrlWOmZ = ctrlWOmZ or 0
+    _lastEffIwx = effIwx or 0
+    _lastEffIwz = effIwz or 0
     _lastActUpX = actUpX
     _lastActUpY = actUpY
     _lastActUpZ = actUpZ
@@ -416,12 +466,18 @@ end
 
 -------------------------------------------------------------------------------------
 -- IFlightEngine: updateGround(ctx)
--- Uses setAngles on ground (no jitter at ground speed, simpler than fighting
--- Bullet's suspension/wheel physics with torque).
+-- TRQ ground mode: uses TORQUE for orientation hold (never setAngles).
+-- setAngles teleports the quaternion but does NOT reset angular velocity
+-- (verified: btRigidBody::setCenterOfMassTransform at line 399-412 of
+-- btRigidBody.cpp only sets m_worldTransform, leaves m_angularVelocity
+-- untouched). Each frame of setAngles vs suspension accumulates angular
+-- velocity that persists into airborne mode, causing immediate divergence.
+-- With torque: no teleport, no velocity accumulation, smooth transition.
 -------------------------------------------------------------------------------------
 --- @param ctx HEFCtx
 --- @return HEFGroundResult
 function TRQEngine.updateGround(ctx)
+    local vehicle = ctx.vehicle
     local keys = ctx.keys
     local mass = ctx.mass
     local velX, velY, velZ = ctx.velX, ctx.velY, ctx.velZ
@@ -434,16 +490,47 @@ function TRQEngine.updateGround(ctx)
     local inTransition = (t > 0)
     local liftoff = false
 
-    if inTransition then
-        _reinitSim(ctx.posX, ctx.posZ)
-        -- Use setAngles on ground (identical to FBW)
-        if FBWOrientation.isInitialized() then
-            ctx.setAngles(FBWOrientation.toEuler())
-        else
-            ctx.setAngles(ctx.angleX, ctx.angleY, ctx.angleZ)
-        end
+    -- Orientation hold via torque (same PD as airborne, no setAngles).
+    -- Ensures zero accumulated angular velocity at ground→airborne transition.
+    TRQTorqueController.initFromVehicle(vehicle)
+
+    if not FBWOrientation.isInitialized() then
+        FBWOrientation.initFromVehicle(ctx.angleX, ctx.angleY, ctx.angleZ)
     end
 
+    -- Read actual up-vector and heading from Bullet (same as update())
+    local actUpVec = vehicle:getUpVector(ctx.scratchVector)
+    local actUpX = HeliUtil.toLuaNum(actUpVec:x())
+    local actUpY = HeliUtil.toLuaNum(actUpVec:y())
+    local actUpZ = HeliUtil.toLuaNum(actUpVec:z())
+    local actFwdVec = vehicle:getForwardVector(ctx.scratchVector)
+    local actFwdX = HeliUtil.toLuaNum(actFwdVec:x())
+    local actFwdZ = HeliUtil.toLuaNum(actFwdVec:z())
+    local actYawDeg = math.deg(math.atan2(actFwdX, actFwdZ))
+
+    local desQuat = FBWOrientation.getQuaternion()
+    -- Extract desired yaw from quaternion (same atan2 convention as actual)
+    local desFwdX = 2 * (desQuat.x * desQuat.z + desQuat.w * desQuat.y)
+    local desFwdZ = 1 - 2 * (desQuat.x * desQuat.x + desQuat.y * desQuat.y)
+    local desYawDeg = math.deg(math.atan2(desFwdX, desFwdZ))
+
+    local dt = 1.0 / ctx.fps
+    local omegaX, omegaY, omegaZ = TRQAngularEstimator.update(ctx.angleX, ctx.angleY, ctx.angleZ, dt)
+    local torqueX, torqueY, torqueZ = TRQTorqueController.compute(
+        desQuat, desYawDeg,
+        actUpX, actUpY, actUpZ, actYawDeg,
+        omegaY, dt)
+
+    local subStepScale = math.max(ctx.subSteps, 1)
+    TRQCoupleForce.apply(vehicle,
+        torqueX * subStepScale, torqueY * subStepScale, torqueZ * subStepScale)
+
+    -- Sim re-anchor during transition
+    if inTransition then
+        _reinitSim(ctx.posX, ctx.posZ)
+    end
+
+    -- Vertical forces (same as FBW ground mode)
     if keys.w and ctx.fuelPercent > 0 then
         ctx.setPhysicsActive(true)
         if ctx.subSteps > 0 then
@@ -499,7 +586,7 @@ function TRQEngine.updateGround(ctx)
     return {
         liftoff = liftoff,
         displaySpeed = 0,
-        keepFlightState = inTransition,
+        keepFlightState = true,  -- always keep state (torque PD runs continuously)
     }
 end
 
@@ -597,16 +684,22 @@ local DEBUG_COLUMNS = {
     "errX", "errZ", "errRateX", "errRateZ",
     "desiredVelX", "desiredVelZ", "targetVelY",
     "angleZ", "angleX", "fwdX", "fwdZ",
-    -- TRQ angular PD
+    -- TRQ angular PD (world-frame torque for readability + body-frame actual)
     "torqueX", "torqueY", "torqueZ",
+    "bodyTorqueX", "bodyTorqueY", "bodyTorqueZ",
     "omegaX", "omegaY", "omegaZ",
     "angErrMag",
     -- TRQ desired vs actual (tracking quality)
     "desAngleX", "desAngleY", "desAngleZ",
     "actAngleX", "actAngleY", "actAngleZ",
-    -- Up-vectors (for diagnosing cross-product sign)
+    -- Up-vectors
     "actUpX", "actUpY", "actUpZ",
     "desUpX", "desUpY", "desUpZ",
+    -- Controller internals (actual values used for PD computation)
+    "ctrlDesYaw", "ctrlActYaw", "ctrlErrY",
+    "ctrlWOmX", "ctrlWOmY", "ctrlWOmZ",
+    -- Heading-corrected inertia
+    "effIwx", "effIwz",
 }
 
 function TRQEngine.getDebugColumns()
@@ -629,6 +722,7 @@ function TRQEngine.getDebugState()
         fwdX = _lastFwdX, fwdZ = _lastFwdZ,
         -- TRQ angular PD
         torqueX = _lastTorqueX, torqueY = _lastTorqueY, torqueZ = _lastTorqueZ,
+        bodyTorqueX = _lastBodyTorqueX, bodyTorqueY = _lastBodyTorqueY, bodyTorqueZ = _lastBodyTorqueZ,
         omegaX = _lastOmegaX, omegaY = _lastOmegaY, omegaZ = _lastOmegaZ,
         angErrMag = _lastAngErrMag,
         -- Desired vs actual angles
@@ -637,6 +731,10 @@ function TRQEngine.getDebugState()
         -- Up-vectors
         actUpX = _lastActUpX, actUpY = _lastActUpY, actUpZ = _lastActUpZ,
         desUpX = _lastDesUpX, desUpY = _lastDesUpY, desUpZ = _lastDesUpZ,
+        -- Controller internals
+        ctrlDesYaw = _lastCtrlDesYaw, ctrlActYaw = _lastCtrlActYaw, ctrlErrY = _lastCtrlErrY,
+        ctrlWOmX = _lastCtrlWOmX, ctrlWOmY = _lastCtrlWOmY, ctrlWOmZ = _lastCtrlWOmZ,
+        effIwx = _lastEffIwx, effIwz = _lastEffIwz,
         -- Inertia (not in columns — available via /hef inertia command)
         Ix = Ix, Iy = Iy, Iz = Iz, inertiaValid = inertiaValid,
     }

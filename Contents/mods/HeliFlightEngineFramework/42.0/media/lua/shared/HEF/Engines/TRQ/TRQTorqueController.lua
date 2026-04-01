@@ -22,6 +22,8 @@ local rad = math.rad
 local acos = math.acos
 local sqrt = math.sqrt
 local abs = math.abs
+local cos = math.cos
+local sin = math.sin
 
 local function clamp(v, lo, hi)
     if v < lo then return lo end
@@ -43,6 +45,29 @@ local _Ix = 1
 local _Iy = 1
 local _Iz = 1
 local _inertiaValid = false
+
+-- Predictive tilt omega: model-based prediction + measurement correction.
+-- Prediction: omega += torque/I * dt_substep (from known applied torque)
+-- Measurement: Δ(upVector) / dt (from actual orientation change)
+-- Blend: omega = (1-alpha) * predicted + alpha * measured
+-- Eliminates EMA lag that caused D-term to under-damp during oscillation peaks.
+local _prevUpX = nil
+local _prevUpZ = nil
+local _predOmegaX = 0   -- predicted omega from applied torque history
+local _predOmegaZ = 0
+local _tiltOmegaX = 0   -- blended omega (what the PD actually uses)
+local _tiltOmegaZ = 0
+local _lastTiltTorqueX = 0  -- last frame's applied torque (for prediction)
+local _lastTiltTorqueZ = 0
+local _lastYawTorque = 0    -- last frame's yaw torque (for yaw omega prediction)
+local _predOmegaY = 0       -- predicted yaw omega (rad/s)
+local _prevYawRad = nil     -- previous frame's yaw angle (rad, for measurement)
+
+-- Center of mass offset (Bullet coords, Y=up) for gravity torque feedforward
+local _comX = 0
+local _comY = 0
+local _comZ = 0
+local _mass = 1
 
 -------------------------------------------------------------------------------------
 -- Helpers
@@ -83,6 +108,19 @@ local function tryReadVec3(vec)
     return nil, nil, nil
 end
 
+--- Read a single component from a Vector3f by name ("x", "y", or "z").
+local function tryReadVec3Component(vec, comp)
+    if not vec then return nil end
+    local ok, v = pcall(function() return toLuaNum(vec[comp](vec)) end)
+    if ok and v then return v end
+    ok, v = pcall(function()
+        local getter = "get" .. comp:upper()
+        return toLuaNum(vec[getter](vec))
+    end)
+    if ok and v then return v end
+    return nil
+end
+
 -------------------------------------------------------------------------------------
 -- Inertia computation
 -------------------------------------------------------------------------------------
@@ -104,15 +142,22 @@ function TRQTorqueController.initFromVehicle(vehicle)
         if ok and shape then ex, ey, ez = tryReadVec3(shape) end
     end
 
+    -- Empirical inertia correction: Bullet's effective inertia is ~1.76× the
+    -- analytical box value (measured from flight data: expected 11220, observed 19745).
+    -- Likely from compound collision shape, btRaycastVehicle constraints, or
+    -- non-uniform mass distribution. Tunable via trqInertiaCorrectionFactor.
+    local corrFactor = HeliConfig.GetTrqInertiaCorrectionFactor()
+
     if ex and ey and ez and not (ex == 0 and ey == 0 and ez == 0) then
-        _Ix = (mass / 12) * (ey * ey + ez * ez)
-        _Iy = (mass / 12) * (ex * ex + ez * ez)
-        _Iz = (mass / 12) * (ex * ex + ey * ey)
-        print("[TRQ] Inertia from extents: Ix=" .. string.format("%.1f", _Ix)
-            .. " Iy=" .. string.format("%.1f", _Iy) .. " Iz=" .. string.format("%.1f", _Iz))
+        _Ix = (mass / 12) * (ey * ey + ez * ez) * corrFactor
+        _Iy = (mass / 12) * (ex * ex + ez * ez) * corrFactor
+        _Iz = (mass / 12) * (ex * ex + ey * ey) * corrFactor
+        print("[TRQ] Inertia from extents (×" .. string.format("%.2f", corrFactor) .. "): Ix="
+            .. string.format("%.1f", _Ix) .. " Iy=" .. string.format("%.1f", _Iy)
+            .. " Iz=" .. string.format("%.1f", _Iz))
     else
         local r = 1.5
-        local I = 0.4 * mass * r * r
+        local I = 0.4 * mass * r * r * corrFactor
         _Ix = I; _Iy = I; _Iz = I
         print("[TRQ] WARNING: Could not read vehicle extents. Using fallback inertia: " .. string.format("%.1f", I))
     end
@@ -120,6 +165,20 @@ function TRQTorqueController.initFromVehicle(vehicle)
     if _Ix < 1 then _Ix = 1 end
     if _Iy < 1 then _Iy = 1 end
     if _Iz < 1 then _Iz = 1 end
+
+    -- Read center-of-mass offset for gravity torque feedforward.
+    -- In Bullet coords (Y=up): gravity = (0, -g, 0). Torque = r_CoM × F_gravity.
+    _mass = mass
+    local okCoM, com = pcall(function() return script:getCenterOfMassOffset() end)
+    if okCoM and com then
+        _comX = tryReadVec3Component(com, "x") or 0
+        _comY = tryReadVec3Component(com, "y") or 0
+        _comZ = tryReadVec3Component(com, "z") or 0
+        if _comX ~= 0 or _comY ~= 0 or _comZ ~= 0 then
+            print("[TRQ] CoM offset: (" .. string.format("%.3f, %.3f, %.3f", _comX, _comY, _comZ) .. ")")
+        end
+    end
+
     _inertiaValid = true
 end
 
@@ -133,17 +192,17 @@ end
 --- @param actUpX number Actual up-vector X (world frame, from vehicle:getUpVector)
 --- @param actUpY number Actual up-vector Y (world frame)
 --- @param actUpZ number Actual up-vector Z (world frame)
---- @param actYawDeg number Actual yaw (degrees, from Bullet Euler Y — continuous, no flip)
---- @param omegaX number Body-frame angular velocity X (deg/s)
---- @param omegaY number Body-frame angular velocity Y (deg/s)
---- @param omegaZ number Body-frame angular velocity Z (deg/s)
+--- @param actYawDeg number Actual yaw (degrees)
+--- @param omegaY number Body-frame yaw angular velocity Y (deg/s, from quaternion estimator, unused — kept for interface compat)
+--- @param dt number Frame time (seconds)
+--- @param subSteps number Number of Bullet substeps this frame (1 or 2 at 60fps)
 --- @return number torqueX World-frame
 --- @return number torqueY World-frame
 --- @return number torqueZ World-frame
 --- @return number angErrMag Error magnitude (rad)
 function TRQTorqueController.compute(desQuat, desYawDeg,
                                      actUpX, actUpY, actUpZ, actYawDeg,
-                                     omegaX, omegaY, omegaZ)
+                                     omegaY, dt, subSteps)
 
     -- === TILT ERROR via up-vector cross product (PX4 approach) ===
     -- Actual up-vector read directly from Bullet (vehicle:getUpVector).
@@ -176,99 +235,137 @@ function TRQTorqueController.compute(desQuat, desYawDeg,
         worldErrZ = crossZ * scale
     end
 
-    -- === YAW ERROR (scalar, proven stable) ===
+    -- === YAW ERROR ===
+    -- No negation. Empirically verified: positive Y couple-force torque → heading
+    -- INCREASES in PZ. wrapAngle(des - act) gives negative when actY > desY →
+    -- negative torque → heading decreases → corrects toward desired. ✓
+    -- Confirmed from 2238-frame stable flight (original form, no negation).
+    -- Confirmed from flight log analysis: positive torque + positive error =
+    -- heading drift in error direction (positive feedback when negated).
     local errYDeg = wrapAngle(desYawDeg - actYawDeg)
     local errY = rad(errYDeg)
 
     local angErrMag = sqrt(worldErrX * worldErrX + errY * errY + worldErrZ * worldErrZ)
 
-    -- === WORLD-FRAME INERTIA TENSOR PD ===
-    -- Instead of rotating error/torque between body and world frames (which caused
-    -- cross-coupling bugs from R-transpose confusion and frame mismatches), we
-    -- transform the inertia tensor to world frame: I_world = R * I_body * R^T.
-    --
-    -- Everything stays in world frame: error, omega, inertia, torque.
-    -- The non-diagonal I_world automatically handles the physical axis coupling
-    -- (e.g., at 30° heading, world-X torque needs world-Z contribution and vice versa).
-    --
-    -- Mathematically identical to R^T→PD→R but eliminates frame confusion.
-    -- Source: Lee, Leok, McClamroch (2010), Gaffer on Games, research agent analysis.
+    -- === HEADING-CORRECTED INERTIA (world frame) ===
+    -- World-fixed couple forces see heading-dependent effective inertia.
+    -- A world-X torque rotates around world X, which projects onto body axes
+    -- as cos(θ)*bodyX + sin(θ)*bodyZ. Effective inertia:
+    --   I_eff_worldX = Ix*cos²(θ) + Iz*sin²(θ)
+    --   I_eff_worldZ = Ix*sin²(θ) + Iz*cos²(θ)
+    -- At 45° headings: both = (Ix+Iz)/2 (uniform average, exact).
+    -- At cardinal headings: one axis gets Ix, the other Iz (11:1 ratio for UH-1B).
+    -- Using uniform average caused 6.2× gain mismatch → oscillation at cardinal headings.
+    local yawRad = rad(actYawDeg)
+    local cosY = cos(yawRad)
+    local sinY = sin(yawRad)
+    local cos2 = cosY * cosY
+    local sin2 = sinY * sinY
+    local I_wx = _Ix * cos2 + _Iz * sin2   -- effective inertia for world-X torque
+    local I_wz = _Ix * sin2 + _Iz * cos2   -- effective inertia for world-Z torque
+    local I_yaw = _Iy
 
-    -- Build rotation matrix R from up-vector + forward-vector (Gram-Schmidt).
-    -- R columns = body axes in world frame.
-    local headingRad = rad(actYawDeg)
-    local rawFwdX = math.sin(headingRad)
-    local rawFwdZ = math.cos(headingRad)
-    local dotFU = rawFwdX * actUpX + rawFwdZ * actUpZ
-    local fwdX = rawFwdX - dotFU * actUpX
-    local fwdY = -dotFU * actUpY
-    local fwdZ = rawFwdZ - dotFU * actUpZ
-    local fwdLen = sqrt(fwdX*fwdX + fwdY*fwdY + fwdZ*fwdZ)
-    if fwdLen > 0.0001 then
-        fwdX = fwdX / fwdLen; fwdY = fwdY / fwdLen; fwdZ = fwdZ / fwdLen
-    else
-        fwdX = rawFwdX; fwdY = 0; fwdZ = rawFwdZ
+    -- === TILT OMEGA: predictive model + measurement correction ===
+    -- Pure EMA had 1-3 frame lag → D-term under-damped during oscillation peaks.
+    -- Predictive approach: predict omega from known applied torque (zero lag),
+    -- blend with measured omega for external disturbance correction.
+    --
+    -- Prediction: omega += last_torque / I_tilt * dt_substep (0.01s)
+    -- Measurement: Δ(upVector) / dt (raw finite difference, world frame)
+    -- Blend: omega = (1 - alpha) * predicted + alpha * measured
+    -- Alpha ~0.3: prediction dominates (fast), measurement corrects drift.
+    local DT_SUBSTEP = 0.01  -- Bullet physics substep duration
+    local wOmX, wOmZ = 0, 0
+
+    -- Step 1: Advance prediction from last frame's applied torque
+    _predOmegaX = _predOmegaX + (_lastTiltTorqueX / I_wx) * DT_SUBSTEP
+    _predOmegaZ = _predOmegaZ + (_lastTiltTorqueZ / I_wz) * DT_SUBSTEP
+
+    if _prevUpX ~= nil and dt > 0 then
+        -- Step 2: Measure omega from up-vector change (raw, no smoothing)
+        local measOmX =  (actUpZ - _prevUpZ) / dt
+        local measOmZ = -(actUpX - _prevUpX) / dt
+
+        -- Step 3: Blend prediction with measurement (fixed alpha)
+        -- Alpha = measurement weight. Higher → tracks disturbances faster but amplifies noise.
+        -- 0.4 balances ~2-frame disturbance tracking with acceptable noise rejection.
+        -- Adaptive alpha was removed: boosting alpha during disturbances created a
+        -- feedback oscillation (PD torque → measured omega → D-term reversal → repeat).
+        local alpha = HeliConfig.GetTrqOmegaAlpha()
+
+        _tiltOmegaX = (1 - alpha) * _predOmegaX + alpha * measOmX
+        _tiltOmegaZ = (1 - alpha) * _predOmegaZ + alpha * measOmZ
+
+        -- Step 4: Correct prediction drift toward measurement
+        _predOmegaX = _tiltOmegaX
+        _predOmegaZ = _tiltOmegaZ
+
+        wOmX = _tiltOmegaX
+        wOmZ = _tiltOmegaZ
     end
-    local rgtX = fwdY * actUpZ - fwdZ * actUpY
-    local rgtY = fwdZ * actUpX - fwdX * actUpZ
-    local rgtZ = fwdX * actUpY - fwdY * actUpX
+    _prevUpX = actUpX
+    _prevUpZ = actUpZ
 
-    -- R: columns are [right(bodyX), up(bodyY), forward(bodyZ)] in world coords
-    local r00, r10, r20 = rgtX, rgtY, rgtZ
-    local r01, r11, r21 = actUpX, actUpY, actUpZ
-    local r02, r12, r22 = fwdX, fwdY, fwdZ
+    -- === YAW OMEGA: predictive model + measurement correction ===
+    -- Same approach as tilt omega. Without prediction, the raw quaternion-estimator
+    -- omega oscillates ±30% every frame due to substep cadence (1-2-2 pattern at 60fps).
+    -- This caused 26,000 Nm yaw torque swings frame-to-frame during stable flight.
+    local wOmY = 0
 
-    -- I_world = R * diag(Ix,Iy,Iz) * R^T (symmetric 3x3)
-    -- Element [i][j] = sum_k( R[i][k] * I_k * R[j][k] )
-    local Iw00 = r00*r00*_Ix + r01*r01*_Iy + r02*r02*_Iz
-    local Iw01 = r00*r10*_Ix + r01*r11*_Iy + r02*r12*_Iz
-    local Iw02 = r00*r20*_Ix + r01*r21*_Iy + r02*r22*_Iz
-    local Iw11 = r10*r10*_Ix + r11*r11*_Iy + r12*r12*_Iz
-    local Iw12 = r10*r20*_Ix + r11*r21*_Iy + r12*r22*_Iz
-    local Iw22 = r20*r20*_Ix + r21*r21*_Iy + r22*r22*_Iz
+    -- Step 1: Advance prediction from last frame's yaw torque
+    _predOmegaY = _predOmegaY + (_lastYawTorque / I_yaw) * DT_SUBSTEP
 
-    -- Omega: body-frame from quaternion estimator → rotate to world via R
-    local omegaXRad = rad(omegaX)
-    local omegaYRad = rad(omegaY)
-    local omegaZRad = rad(omegaZ)
-    local wOmX = r00*omegaXRad + r01*omegaYRad + r02*omegaZRad
-    local wOmY = r10*omegaXRad + r11*omegaYRad + r12*omegaZRad
-    local wOmZ = r20*omegaXRad + r21*omegaYRad + r22*omegaZRad
+    if _prevYawRad ~= nil and dt > 0 then
+        -- Step 2: Measure yaw omega from heading change
+        local dyaw = yawRad - _prevYawRad
+        -- Wrap to [-pi, pi]
+        if dyaw > 3.14159 then dyaw = dyaw - 6.28318
+        elseif dyaw < -3.14159 then dyaw = dyaw + 6.28318
+        end
+        local measOmY = dyaw / dt
 
-    -- PD correction in world frame (P and D gains are scalar, same for all axes)
-    local P_tilt = HeliConfig.GetTrqPitchPGain()  -- use pitch gain for all tilt
+        -- Step 3: Blend prediction with measurement (same alpha as tilt)
+        local alpha = HeliConfig.GetTrqOmegaAlpha()
+        wOmY = (1 - alpha) * _predOmegaY + alpha * measOmY
+
+        -- Step 4: Correct prediction drift toward measurement
+        _predOmegaY = wOmY
+    end
+    _prevYawRad = yawRad
+
+    -- PD in world frame
+    local P_tilt = HeliConfig.GetTrqPitchPGain()
     local D_tilt = HeliConfig.GetTrqPitchDGain()
-    local corrX = P_tilt * worldErrX - D_tilt * wOmX
-    local corrZ = P_tilt * worldErrZ - D_tilt * wOmZ
-
-    -- Yaw PD (scalar, independent)
-    local corrY = HeliConfig.GetTrqYawPGain() * errY - HeliConfig.GetTrqYawDGain() * wOmY
-
-    -- World torque = I_world * correction (includes cross-coupling from off-diagonal terms)
     local maxTorque = HeliConfig.GetTrqMaxTorque()
-    local torqueX = Iw00*corrX + Iw01*corrY + Iw02*corrZ
-    local torqueY = Iw01*corrX + Iw11*corrY + Iw12*corrZ
-    local torqueZ = Iw02*corrX + Iw12*corrY + Iw22*corrZ
 
-    -- === GYROSCOPIC FEEDFORWARD (tunable, default OFF) ===
-    -- omega × (I_world * omega) in world frame.
+    local torqueX = I_wx  * (P_tilt * worldErrX - D_tilt * wOmX)
+    local torqueY = I_yaw * (HeliConfig.GetTrqYawPGain() * errY - HeliConfig.GetTrqYawDGain() * wOmY)
+    local torqueZ = I_wz  * (P_tilt * worldErrZ - D_tilt * wOmZ)
+
+    -- === GYROSCOPIC FEEDFORWARD (world frame, tunable, default OFF) ===
     local gyroScale = HeliConfig.GetTrqGyroScale()
     if gyroScale > 0 then
-        -- I_world * omega_world
-        local IwX = Iw00*wOmX + Iw01*wOmY + Iw02*wOmZ
-        local IwY = Iw01*wOmX + Iw11*wOmY + Iw12*wOmZ
-        local IwZ = Iw02*wOmX + Iw12*wOmY + Iw22*wOmZ
-        -- omega × (I_world * omega)
-        torqueX = torqueX + gyroScale * (wOmY*IwZ - wOmZ*IwY)
-        torqueY = torqueY + gyroScale * (wOmZ*IwX - wOmX*IwZ)
-        torqueZ = torqueZ + gyroScale * (wOmX*IwY - wOmY*IwX)
+        local IwOmX = I_wx * wOmX
+        local IwOmY = I_yaw * wOmY
+        local IwOmZ = I_wz * wOmZ
+        torqueX = torqueX + gyroScale * (wOmY * IwOmZ - wOmZ * IwOmY)
+        torqueY = torqueY + gyroScale * (wOmZ * IwOmX - wOmX * IwOmZ)
+        torqueZ = torqueZ + gyroScale * (wOmX * IwOmY - wOmY * IwOmX)
     end
 
     torqueX = clamp(torqueX, -maxTorque, maxTorque)
     torqueY = clamp(torqueY, -maxTorque, maxTorque)
     torqueZ = clamp(torqueZ, -maxTorque, maxTorque)
 
-    return torqueX, torqueY, torqueZ, angErrMag
+    -- Store torques for next frame's prediction
+    _lastTiltTorqueX = torqueX
+    _lastTiltTorqueZ = torqueZ
+    _lastYawTorque = torqueY
+
+    -- Return torque + controller internals for debugging
+    return torqueX, torqueY, torqueZ, angErrMag,
+           desYawDeg, actYawDeg, errYDeg, wOmX, wOmY, wOmZ,
+           I_wx, I_wz
 end
 
 --- @return number Ix, number Iy, number Iz, boolean valid
@@ -279,4 +376,9 @@ end
 function TRQTorqueController.reset()
     _Ix = 1; _Iy = 1; _Iz = 1
     _inertiaValid = false
+    _prevUpX = nil; _prevUpZ = nil
+    _predOmegaX = 0; _predOmegaZ = 0
+    _lastTiltTorqueX = 0; _lastTiltTorqueZ = 0
+    _tiltOmegaX = 0; _tiltOmegaZ = 0
+    _lastYawTorque = 0; _predOmegaY = 0; _prevYawRad = nil
 end

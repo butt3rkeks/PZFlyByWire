@@ -19,8 +19,9 @@
 
     Phantom wheel design (intentional):
       - No model field → invisible, never rendered
-      - Centered at X=0 → eliminates asymmetric btRaycastVehicle torque that
-        caused tilt drift with spread wheels during descent
+      - Positioned at centerOfMassOffset → eliminates asymmetric moment arm that
+        caused directional tilt bias during ascent/descent. With offset (0,0,0) the
+        wheel was 7m forward of CoM on UH-1B, giving a pitch-axis moment arm.
       - Vehicle-level suspension must be zeroed in .txt → no ground interaction forces
       - Sole purpose: getWheelCount() > 0 in updateVelocityMultiplier()
 
@@ -30,15 +31,47 @@
 
 HEFWheelInjector = {}
 
--- Phantom wheel values: all zeros. Verified safe — Bullet's btRaycastVehicle uses
--- suspensionStiffness, suspensionDamping, wheelFriction as MULTIPLIERS only (never
--- divisors). Zero produces zero force, no NaN risk. Source: btRaycastVehicle.cpp
--- updateSuspension (stiffness × length_diff) and updateFriction (frictionSlip × suspForce).
-local PHANTOM_WHEEL = [[{
+local toLuaNum = HeliUtil and HeliUtil.toLuaNum or tonumber
+
+--- Read the centerOfMassOffset from a VehicleScript.
+--- Returns x, y, z in PZ script coordinates, or 0,0,0 if unavailable.
+local function readCoMOffset(script)
+    local ok, com = pcall(function() return script:getCenterOfMassOffset() end)
+    if not ok or not com then return 0, 0, 0 end
+
+    -- Try :x()/:y()/:z() first, then :getX()/:getY()/:getZ(), then string parse
+    local function readComp(vec, comp)
+        local s, v = pcall(function() return toLuaNum(vec[comp](vec)) end)
+        if s and v then return v end
+        s, v = pcall(function()
+            local getter = "get" .. comp:upper()
+            return toLuaNum(vec[getter](vec))
+        end)
+        if s and v then return v end
+        return nil
+    end
+
+    local cx = readComp(com, "x")
+    local cy = readComp(com, "y")
+    local cz = readComp(com, "z")
+    if cx and cy and cz then return cx, cy, cz end
+
+    -- Fallback: parse tostring
+    local s = tostring(com)
+    if s then
+        local a, b, c = s:match("([%d%.%-]+)[,%s]+([%d%.%-]+)[,%s]+([%d%.%-]+)")
+        if a then return tonumber(a) or 0, tonumber(b) or 0, tonumber(c) or 0 end
+    end
+    return 0, 0, 0
+end
+
+--- Build phantom wheel script text with given offset (PZ script coordinates).
+local function buildPhantomWheelScript(offX, offY, offZ)
+    return string.format([[{
     wheel PhantomCenter
     {
         front = TRUE,
-        offset = 0.000000 0.000000 0.000000,
+        offset = %.6f %.6f %.6f,
         radius = 0.300000,
         width = 0.200000,
     },
@@ -50,7 +83,13 @@ local PHANTOM_WHEEL = [[{
     rollInfluence = 0,
     wheelFriction = 0,
     stoppingMovementForce = 0,
-}]]
+}]], offX, offY, offZ)
+end
+
+-- Phantom wheel values: all zeros. Verified safe — Bullet's btRaycastVehicle uses
+-- suspensionStiffness, suspensionDamping, wheelFriction as MULTIPLIERS only (never
+-- divisors). Zero produces zero force, no NaN risk. Source: btRaycastVehicle.cpp
+-- updateSuspension (stiffness × length_diff) and updateFriction (frictionSlip × suspForce).
 
 local function injectPhantomWheelIntoWarThunderHelis()
     if not HeliList then return end
@@ -61,11 +100,21 @@ local function injectPhantomWheelIntoWarThunderHelis()
         local script = sm:getVehicle("Base." .. heliName)
         if script then
             if script:getWheelCount() == 0 then
+                -- Read CoM offset so phantom wheel sits at CoM (zero moment arm)
+                local comX, comY, comZ = readCoMOffset(script)
+                local wheelScript = buildPhantomWheelScript(comX, comY, comZ)
+
                 local ok, err = pcall(function()
-                    script:Load(script:getFullName(), PHANTOM_WHEEL)
+                    script:Load(script:getFullName(), wheelScript)
                 end)
                 if ok then
-                    print("[HEF] WheelInjector: injected phantom wheel into " .. script:getFullName())
+                    if comX ~= 0 or comY ~= 0 or comZ ~= 0 then
+                        print("[HEF] WheelInjector: injected phantom wheel into " .. script:getFullName()
+                            .. " at CoM (" .. string.format("%.3f, %.3f, %.3f", comX, comY, comZ) .. ")")
+                    else
+                        print("[HEF] WheelInjector: injected phantom wheel into " .. script:getFullName()
+                            .. " at origin (no CoM offset)")
+                    end
                 else
                     print("[HEF] WheelInjector: ERROR injecting into " .. heliName .. ": " .. tostring(err))
                 end

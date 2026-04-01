@@ -300,15 +300,22 @@ The freeMode path coerces `getVelocity()` via `toLuaNum` before returning.
 ## Vehicle Script Modifications
 
 ### Phantom Wheel (HEFWheelInjector.lua, runtime injection via script:Load)
-- Single invisible center wheel (`PhantomCenter` at offset 0,0,0), no model attached
+- Single invisible center wheel, no model attached
 - Injected at `OnGameStart` into every HeliList helicopter with 0 wheels
 - **Sole purpose**: `getWheelCount() > 0` to bypass `updateVelocityMultiplier` 0.1x velocity kill
 - **All vehicle physics zeroed** to prevent btRaycastVehicle from fighting flight forces:
   - `suspensionStiffness=0, suspensionCompression=0, suspensionDamping=0`
   - `maxSuspensionTravelCm=0, suspensionRestLength=0`
   - `rollInfluence=0, wheelFriction=0, stoppingMovementForce=0`
-- Wheel at offset Y=0 (chassis center) — prevents ground contact raycast hits at low altitude.
-  Previous offset Y=-2.5 caused the wheel to penetrate ground below ~1.0 z-levels, generating
+- **CoM-aware placement**: HEFWheelInjector reads `centerOfMassOffset` from each helicopter's
+  VehicleScript and places the phantom wheel at the center of mass (CoM), not at (0,0,0).
+  Previous offset (0,0,0) placed the wheel at the model origin, which for the UH-1B
+  (centerOfMassOffset = 0, 2.3478, -6.9565) put the wheel 7 meters forward of the CoM.
+  This created an asymmetric moment arm in the btRaycastVehicle, causing directionally biased
+  pitch disturbances: forward tilt kick was stronger than backward, and both were stronger than
+  sideways. The "descent tilt kick" bug was caused by this asymmetry amplifying micro-residual
+  forces from btRaycastVehicle processing during vertical movement.
+- Previous offset Y=-2.5 caused the wheel to penetrate ground below ~1.0 z-levels, generating
   btRaycastVehicle contact forces that capped vertical velocity at ~0.5 Bullet Y/s.
 
 ### Ground/Airborne Transition Zone (FBWEngine.updateGround)
@@ -345,17 +352,34 @@ For project structure, API reference, and engine authoring guide, see [DEVELOPER
    Bullet read timing relative to sub-step boundaries. The soft anchor uses position-delta
    speed (immune to stale reads) for its low-speed detection.
 
-3. **setAngles teleport resets linear velocity** — `setAngles()` calls `setWorldTransform()` →
-   `Bullet.teleportVehicle()`. Teleport resets linear velocity every frame orientation changes.
-   During yaw rotation (A/D keys), velY drops ~75% (from ~5.6 to ~1.5). During pitch/roll
-   changes (most flight frames), same effect. Causes:
-   - Vertical speed drop during yaw (confirmed in flight log analysis)
-   - Visual jitter at high speed (micro-differences between teleport frames)
-   - Reduced effective vertical rate during any orientation change
-   **TRQ engine** (`torque-control` branch) addresses this via couple-force torque instead
-   of setAngles. Hover hold + yaw rotation through 360°+ proven stable (~14s flights).
-   Remaining issue: tumble during sustained fast yaw + descent. See `trq_research_findings.md`
-   in memory for architecture details and remaining issues.
+3. **setAngles teleport and velocity** — **PARTIALLY RESOLVED via Ghidra decompilation.**
+   `setOwnVehiclePhysics` (native) writes position, quaternion, and linear velocity but does
+   NOT write angular velocity. This confirms that `setAngles`/`teleportVehicle` does not reset
+   linear velocity at the native level, consistent with upstream Bullet.
+   Full call chain:
+   `Lua setAngles` → Kahlua bridge → `BaseVehicle.setAngles` (line 4103) →
+   `setWorldTransform` (line 4072) → `Bullet.teleportVehicle` (native JNI) →
+   `PZBullet64.dll` (black box) → presumably `btRigidBody::setCenterOfMassTransform`.
+   Verified from upstream Bullet source (`btRigidBody.cpp:399-412`): sets
+   `m_worldTransform` (line 411) but does NOT reset `m_linearVelocity` or
+   `m_angularVelocity`. Lines 409-410 save velocity to interpolation state only.
+   **CAVEAT**: PZ's native `teleportVehicle` in PZBullet64.dll is unverifiable
+   (closed-source DLL). It COULD add velocity resets beyond what upstream
+   `setCenterOfMassTransform` does. No Java code in the chain touches velocity
+   (verified: `BaseVehicle.setWorldTransform` at line 4072-4089 only calls
+   `jniTransform.set` + `Bullet.teleportVehicle`, nothing else).
+   - **Linear velocity**: observed to drop during orientation changes (likely from
+     `updateVelocityMultiplier` or ground contact, not from teleport itself)
+   - **Angular velocity**: ACCUMULATES when setAngles fights Bullet's suspension.
+     Each frame: setAngles teleports to level → suspension pushes back to tilt →
+     angular velocity increases → setAngles teleports again (resets orientation but
+     NOT angular velocity). Over hundreds of frames, angular velocity builds up.
+     When setAngles stops (airborne transition), the accumulated angular velocity
+     persists and overwhelms the torque PD.
+   - **Visual jitter at high speed**: micro-differences between teleport frames
+   **TRQ engine** (`torque-control` branch) addresses this by never calling setAngles.
+   Both ground mode and airborne mode use couple-force torque. No velocity
+   accumulation, no teleport discontinuity. See `trq_research_findings.md`.
 
 4. **PZ grid Z vs Bullet altitude** — the helicopter is always on floor 0 in PZ's grid.
    Ghost mode prevents zombie interaction.
@@ -367,6 +391,30 @@ For project structure, API reference, and engine authoring guide, see [DEVELOPER
 6. **Bullet gravity = 10.0 m/s²** — verified from `btDiscreteDynamicsWorld` default `m_gravity(0,-10,0)`.
    PZBullet64.dll has zero gravity-setting strings (binary search). FBW's default was corrected
    from 9.8 → 10.0 (commit 74cec6b). Saves with old default need `/hef gravity 10` or re-create.
+
+7. **Descent tilt kick (RESOLVED)** — phantom wheel CoM offset was the root cause.
+   UH-1B has `centerOfMassOffset` (0, 2.3478, -6.9565). Placing the phantom wheel at (0,0,0)
+   put it 7m forward of CoM, creating an asymmetric pitch moment arm in btRaycastVehicle.
+   The tilt kick was directionally biased: forward > backward >> sideways, because the 7m
+   forward offset amplified micro-residual forces from btRaycastVehicle processing.
+   Fix: HEFWheelInjector now reads `centerOfMassOffset` per helicopter and places the wheel
+   at CoM. See Vehicle Script Modifications section.
+
+### TRQ Engine: Adaptive Alpha for Disturbance Rejection
+
+The TRQ engine uses an adaptive alpha parameter to boost the measurement weight in the
+angular velocity estimator when prediction and measurement diverge significantly:
+
+- **trqAlphaBoost** (0.85): measurement weight when disturbance is detected
+- **trqAlphaThreshold** (0.2 rad/s): prediction-measurement divergence threshold for triggering boost
+- **trqAlphaDecay** (0.15): rate at which alpha returns to baseline after disturbance passes
+
+When the estimator's predicted angular velocity diverges from the measured value by more than
+`trqAlphaThreshold`, the alpha is boosted to `trqAlphaBoost` (trusting measurement more heavily).
+Recovery is fast (~1 frame) via the decay parameter. This prevents the phantom wheel CoM offset
+disturbance (or any external torque) from persisting in the estimator state.
+
+The `adaptAlpha` value is logged as a debug column in flight recorder CSV files.
 
 ## Removed Features
 

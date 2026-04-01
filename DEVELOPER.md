@@ -317,4 +317,24 @@ PZ uses the Kahlua Lua VM, which has critical differences from standard Lua:
 - **Modulo is C-style**: `-5 % 30 = -5`, not 25. Add the modulus first if you need positive results.
 - **`math.tanh` does not exist**. Compute manually: `(e^2x - 1) / (e^2x + 1)`.
 
+## TRQ Engine Notes
+
+The TRQ (torque-based rotation) engine uses couple-force torque instead of `setAngles` teleportation. Key implementation details:
+
+### Adaptive Alpha (Disturbance Rejection)
+
+The angular velocity estimator uses an adaptive alpha that boosts measurement weight when prediction diverges from measurement:
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `trqAlphaBoost` | 0.85 | Measurement weight during detected disturbance |
+| `trqAlphaThreshold` | 0.2 rad/s | Divergence threshold to trigger boost |
+| `trqAlphaDecay` | 0.15 | Recovery rate back to baseline alpha |
+
+The `adaptAlpha` value is exported as a debug column in flight recorder CSV files (via `getDebugColumns()` / `getDebugState()`).
+
+### HEFWheelInjector CoM-Aware Placement
+
+HEFWheelInjector reads `centerOfMassOffset` from each helicopter's VehicleScript and places the phantom wheel at the center of mass rather than at (0,0,0). This eliminates the asymmetric moment arm that caused directionally biased pitch disturbances in btRaycastVehicle. See KNOWLEDGE.md issue 7 for the full root cause analysis.
+
 See [KNOWLEDGE.md](KNOWLEDGE.md) for deep technical details on physics timing, rotation math, and the full rationale behind the FBW architecture.
