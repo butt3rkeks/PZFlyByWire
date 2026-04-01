@@ -275,16 +275,22 @@ function TRQTorqueController.compute(desQuat, desYawDeg,
     -- Blend: omega = (1 - alpha) * predicted + alpha * measured
     -- Alpha ~0.3: prediction dominates (fast), measurement corrects drift.
     local DT_SUBSTEP = 0.01  -- Bullet physics substep duration
+    local nSteps = math.max(subSteps or 1, 1)
+    local physicsDt = nSteps * DT_SUBSTEP  -- actual physics time elapsed this frame
     local wOmX, wOmZ = 0, 0
 
     -- Step 1: Advance prediction from last frame's applied torque
+    -- Torque acts for exactly 1 substep (cleared after). Prediction of omega
+    -- change from our torque is always torque/I * 0.01, independent of substep count.
     _predOmegaX = _predOmegaX + (_lastTiltTorqueX / I_wx) * DT_SUBSTEP
     _predOmegaZ = _predOmegaZ + (_lastTiltTorqueZ / I_wz) * DT_SUBSTEP
 
-    if _prevUpX ~= nil and dt > 0 then
-        -- Step 2: Measure omega from up-vector change (raw, no smoothing)
-        local measOmX =  (actUpZ - _prevUpZ) / dt
-        local measOmZ = -(actUpX - _prevUpX) / dt
+    if _prevUpX ~= nil and physicsDt > 0 then
+        -- Step 2: Measure omega from up-vector change over PHYSICS time
+        -- Using physicsDt (subSteps × 0.01) instead of frame dt eliminates the
+        -- ±30% jitter from substep cadence variation (1-2-2 pattern at 60fps).
+        local measOmX =  (actUpZ - _prevUpZ) / physicsDt
+        local measOmZ = -(actUpX - _prevUpX) / physicsDt
 
         -- Step 3: Blend prediction with measurement (fixed alpha)
         -- Alpha = measurement weight. Higher → tracks disturbances faster but amplifies noise.
@@ -315,14 +321,14 @@ function TRQTorqueController.compute(desQuat, desYawDeg,
     -- Step 1: Advance prediction from last frame's yaw torque
     _predOmegaY = _predOmegaY + (_lastYawTorque / I_yaw) * DT_SUBSTEP
 
-    if _prevYawRad ~= nil and dt > 0 then
-        -- Step 2: Measure yaw omega from heading change
+    if _prevYawRad ~= nil and physicsDt > 0 then
+        -- Step 2: Measure yaw omega from heading change over PHYSICS time
         local dyaw = yawRad - _prevYawRad
         -- Wrap to [-pi, pi]
         if dyaw > 3.14159 then dyaw = dyaw - 6.28318
         elseif dyaw < -3.14159 then dyaw = dyaw + 6.28318
         end
-        local measOmY = dyaw / dt
+        local measOmY = dyaw / physicsDt
 
         -- Step 3: Blend prediction with measurement (same alpha as tilt)
         local alpha = HeliConfig.GetTrqOmegaAlpha()

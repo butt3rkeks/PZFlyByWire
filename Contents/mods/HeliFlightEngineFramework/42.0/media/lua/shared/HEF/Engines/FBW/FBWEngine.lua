@@ -133,9 +133,10 @@ function FBWEngine.update(ctx)
         FBWOrientation.initFromVehicle(ctx.angleX, ctx.angleY, ctx.angleZ)
     end
 
-    -- 2. FBWInputProcessor: keys → rotation deltas
-    local pitchDelta, yawDelta, rollDelta, isRotating = FBWInputProcessor.computeRotationDeltas(
-        keys, fpsMultiplier, heliType, blocked, freeMode)
+    -- 2. InputProcessor: keys → rotation deltas
+    local pitchDelta, yawDelta, rollDelta, isRotating = InputProcessor.computeRotationDeltas(
+        keys, fpsMultiplier, heliType, blocked, freeMode,
+        FBWOrientation.getBodyPitch(), FBWOrientation.getBodyRoll())
 
     -- 3. Apply tilt + yaw to FBWOrientation
     FBWOrientation.applyTilt(pitchDelta, rollDelta)
@@ -192,8 +193,9 @@ function FBWEngine.update(ctx)
     local effectiveInertia = baseBrake * (hasHInput and HeliConfig.GetAccel() or HeliConfig.GetDecel())
 
     -- 12-14. Sim advance + heading reanchor + soft anchor
-    FBWSimController.advanceAndAnchor(_sim, _errorTracker, desiredHX, desiredHZ,
-        deltaTime, effectiveInertia, hasHInput, posX, posZ, fps, _flightAssistOff, ctx.positionDeltaSpeed)
+    SimController.advanceAndAnchor(_sim, _errorTracker, desiredHX, desiredHZ,
+        deltaTime, effectiveInertia, hasHInput, posX, posZ, fps, _flightAssistOff, ctx.positionDeltaSpeed,
+        FBWYawController.checkHeadingReanchor)
 
     -- 15. Record in error tracker
     local simPosX, simPosZ, simVelX, simVelZ = _sim:getState()

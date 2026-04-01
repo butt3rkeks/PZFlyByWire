@@ -1,19 +1,18 @@
 --[[
     TRQEngine — Torque-based flight engine implementing IFlightEngine
 
-    Research prototype: replaces setAngles teleport with couple-force torque
-    so Bullet handles rotation natively (interpolated, no jitter).
+    Torque-based flight engine: replaces setAngles teleport with couple-force
+    torque so Bullet handles rotation natively (interpolated, no jitter).
 
-    Reuses FBW modules for everything except step 5 (rotation actuator):
-      FBW step 5:  ctx.setAngles(FBWOrientation.toEuler())
-      TRQ step 5:  estimate omega → PD torque → couple forces
+    Fully self-contained: uses Core/Toolkit modules + TRQ-specific modules.
+    Zero FBW dependencies. Each engine (FBW or TRQ) is independent.
 
     Registers itself at file scope: IFlightEngine.register("TRQ", TRQEngine)
 ]]
 
 TRQEngine = {}
 
--- Same constants as FBW (vertical velocity smoothing, adaptive gain)
+-- Constants (vertical velocity smoothing, adaptive gain)
 TRQEngine.VERTICAL_VELOCITY_SMOOTHING = 0.3
 TRQEngine.ADAPTIVE_GAIN_ALPHA   = 0.05
 TRQEngine.ADAPTIVE_GAIN_MIN     = 1.0
@@ -21,7 +20,7 @@ TRQEngine.ADAPTIVE_GAIN_MAX     = 8.0
 TRQEngine.ADAPTIVE_GAIN_DEADZONE = 0.3
 
 -------------------------------------------------------------------------------------
--- Engine state (mirrors FBWEngine)
+-- Engine state
 --- Wrap angle delta to [-180, +180].
 local function wrapAngle(d)
     if d > 180 then d = d - 360
@@ -48,7 +47,7 @@ local _lastOmegaX = 0
 local _lastOmegaY = 0
 local _lastOmegaZ = 0
 local _lastAngErrMag = 0
--- Flight pipeline state (shared with FBW columns)
+-- Flight pipeline state
 local _lastDesiredHX = 0
 local _lastDesiredHZ = 0
 local _lastTargetVelY = 0
@@ -148,9 +147,9 @@ function TRQEngine.resetFlightState()
     _lastActAngleY = 0
     _lastActAngleZ = 0
 
-    FBWOrientation.reset()
-    FBWYawController.reset()
-    FBWTiltResolver.reset()
+    TRQOrientation.reset()
+    TRQYawController.reset()
+    TRQTiltResolver.reset()
     TRQAngularEstimator.reset()
     TRQTorqueController.reset()
     _sim:reset(0, 0)
@@ -209,50 +208,49 @@ function TRQEngine.update(ctx)
     local freeMode = vehicle:getModData().AutoBalance == true
     _flightAssistOff = freeMode
 
-    -- 1. Init FBWOrientation from vehicle if not initialized
-    if not FBWOrientation.isInitialized() then
-        FBWOrientation.initFromVehicle(ctx.angleX, ctx.angleY, ctx.angleZ)
+    -- 1. Init TRQOrientation from vehicle if not initialized
+    if not TRQOrientation.isInitialized() then
+        TRQOrientation.initFromVehicle(ctx.angleX, ctx.angleY, ctx.angleZ)
     end
 
-    -- 2. FBWInputProcessor: keys → rotation deltas
-    local pitchDelta, yawDelta, rollDelta, isRotating = FBWInputProcessor.computeRotationDeltas(
-        keys, fpsMultiplier, heliType, blocked, freeMode)
-
-    -- 3. Apply tilt + yaw to FBWOrientation (desired orientation)
-    FBWOrientation.applyTilt(pitchDelta, rollDelta)
-    FBWOrientation.applyYaw(yawDelta)
-
-    -- 4. Yaw MPC: track intended heading, hard lock when not rotating
-    local simYaw = FBWYawController.update(FBWOrientation.getYaw(), isRotating, yawDelta)
-    if not isRotating then
-        FBWOrientation.setYaw(simYaw)
-    end
-
-    -- 5. TRQ: apply torque instead of setAngles
-    --    Desired quaternion direct from FBWOrientation (no Euler round-trip).
-    --    Desired yaw scalar from FBWOrientation (for scalar yaw PD).
-    --    TRQTorqueController: tilt-decomposed pitch/roll + scalar yaw → torque.
-    --
-    --    Read actual up-vector directly from Bullet (vehicle:getUpVector).
-    --    Bypasses Euler angles entirely for tilt — no gimbal flip possible.
-    --    Euler Y (heading) is still used for scalar yaw PD (Y is continuous,
-    --    no flip at ±90° heading).
+    -- 1b. Update actual vehicle state in TRQOrientation (read from Bullet)
+    --     This must happen BEFORE InputProcessor reads body angles.
     local actUpVec = vehicle:getUpVector(ctx.scratchVector)
     local actUpX = HeliUtil.toLuaNum(actUpVec:x())
     local actUpY = HeliUtil.toLuaNum(actUpVec:y())
     local actUpZ = HeliUtil.toLuaNum(actUpVec:z())
-
-    -- Extract actual yaw from forward vector (same method as FBWOrientation.initFromVehicle).
-    -- Euler Y from getAngleY() can be unreliable during Euler flip (XYZ decomposition
-    -- Y range shifts). Forward vector projection is always correct.
     local actFwdVec = vehicle:getForwardVector(ctx.scratchVector)
     local actFwdX = HeliUtil.toLuaNum(actFwdVec:x())
     local actFwdZ = HeliUtil.toLuaNum(actFwdVec:z())
     local actYawDeg = math.deg(math.atan2(actFwdX, actFwdZ))
+    TRQOrientation.updateActualState(actUpX, actUpY, actUpZ, actFwdX, actFwdZ, actYawDeg)
 
-    local desQuat = FBWOrientation.getQuaternion()
+    -- 2. InputProcessor: keys → rotation deltas (reads ACTUAL body angles from Bullet)
+    local pitchDelta, yawDelta, rollDelta, isRotating = InputProcessor.computeRotationDeltas(
+        keys, fpsMultiplier, heliType, blocked, freeMode,
+        TRQOrientation.getBodyPitch(), TRQOrientation.getBodyRoll())
+
+    -- 3. Apply tilt + yaw to TRQOrientation (desired orientation)
+    TRQOrientation.applyTilt(pitchDelta, rollDelta)
+    TRQOrientation.applyYaw(yawDelta)
+
+    -- 4. Yaw MPC: track intended heading, hard lock when not rotating
+    local simYaw = TRQYawController.update(TRQOrientation.getYaw(), isRotating, yawDelta)
+    if not isRotating then
+        TRQOrientation.setYaw(simYaw)
+    end
+
+    -- 5. TRQ: apply torque instead of setAngles
+    --    Desired quaternion direct from TRQOrientation (no Euler round-trip).
+    --    Desired yaw scalar from TRQOrientation (for scalar yaw PD).
+    --    TRQTorqueController: tilt-decomposed pitch/roll + scalar yaw → torque.
+    --
+    -- Actual vehicle state already read in step 1b (actUpX/Y/Z, actFwdX/Z, actYawDeg)
+    -- Reuse those values here — no duplicate Bullet reads.
+
+    local desQuat = TRQOrientation.getQuaternion()
     -- Extract desired yaw from desired QUATERNION using same atan2 as actual.
-    -- FBWOrientation.getYaw() returns _yawDeg which uses OPPOSITE convention
+    -- TRQOrientation.getYaw() returns _yawDeg which uses OPPOSITE convention
     -- to getForwardVector's atan2: D key decreases _yawDeg but increases physical
     -- heading. In FBW this doesn't matter (setAngles teleports). In TRQ the mismatch
     -- causes the yaw error to grow instead of shrink → sustained oscillation.
@@ -288,7 +286,7 @@ function TRQEngine.update(ctx)
         TRQTorqueController.compute(
             desQuat, desYawDeg,
             actUpX, actUpY, actUpZ, actYawDeg,
-            omegaY, dt)
+            omegaY, dt, ctx.subSteps)
 
     -- NO substep multiplier. The force acts for one 0.01s substep regardless of
     -- frame substep count. FBW KNOWLEDGE.md: "Multiplying by subSteps caused a
@@ -298,7 +296,7 @@ function TRQEngine.update(ctx)
     TRQCoupleForce.apply(vehicle, torqueX, torqueY, torqueZ)
 
     -- Persist for debug
-    local desAngleX, desAngleY, desAngleZ = FBWOrientation.toEuler()
+    local desAngleX, desAngleY, desAngleZ = TRQOrientation.toEuler()
     _lastTorqueX = torqueX  -- world-frame (= actual applied torque)
     _lastTorqueY = torqueY
     _lastTorqueZ = torqueZ
@@ -320,7 +318,7 @@ function TRQEngine.update(ctx)
     _lastActUpX = actUpX
     _lastActUpY = actUpY
     _lastActUpZ = actUpZ
-    local desUpQ = FBWOrientation.getQuaternion()
+    local desUpQ = TRQOrientation.getQuaternion()
     _lastDesUpX = 2 * (desUpQ.x * desUpQ.y + desUpQ.w * desUpQ.z)
     _lastDesUpY = 1 - 2 * (desUpQ.x * desUpQ.x + desUpQ.z * desUpQ.z)
     _lastDesUpZ = 2 * (desUpQ.y * desUpQ.z - desUpQ.w * desUpQ.x)
@@ -332,20 +330,20 @@ function TRQEngine.update(ctx)
     _lastDesAngleZ = desAngleZ
 
     -- 6. Read forward direction + body angles from desired orientation
-    -- (FBW reads from FBWOrientation for the flight model — same here)
-    local fwdX, fwdZ = FBWOrientation.getForward()
-    local angleZ = FBWOrientation.getBodyPitch()
-    local angleX = FBWOrientation.getBodyRoll()
+    -- Read body angles from TRQOrientation for the flight model
+    local fwdX, fwdZ = TRQOrientation.getForward()
+    local angleZ = TRQOrientation.getBodyPitch()
+    local angleX = TRQOrientation.getBodyRoll()
     _lastAngleZ = angleZ
     _lastAngleX = angleX
     _lastFwdX = fwdX
     _lastFwdZ = fwdZ
 
-    -- 7-8. Wall pre-blocking + FBWFilters pipeline → desired horizontal velocity
+    -- 7-8. Wall pre-blocking + FlightFilters pipeline → desired horizontal velocity
     local posX = ctx.posX
     local posZ = ctx.posZ
     local totalVelX, totalVelZ, totalSpeed, totalTiltRad, isBlockedHit =
-        FBWTiltResolver.resolve(angleZ, angleX, blocked, fwdX, fwdZ, posX, posZ)
+        TRQTiltResolver.resolve(angleZ, angleX, blocked, fwdX, fwdZ, posX, posZ)
 
     -- 9. Tilt/input flags
     local noiseFloor = HeliConfig.TILT_NOISE_FLOOR
@@ -356,7 +354,7 @@ function TRQEngine.update(ctx)
 
     -- 10. FA-off coast logic → resolve desired velocity for sim
     local desiredHX, desiredHZ
-    desiredHX, desiredHZ, hasHInput = FBWSimController.resolveDesiredVelocity(
+    desiredHX, desiredHZ, hasHInput = SimController.resolveDesiredVelocity(
         hasHInput, totalVelX, totalVelZ, freeMode, noInput,
         _sim, ctx.velX, ctx.velZ, _reinitSim, posX, posZ)
     if hasHInput and not _hasHorizontalInput then
@@ -374,8 +372,9 @@ function TRQEngine.update(ctx)
     local effectiveInertia = baseBrake * (hasHInput and HeliConfig.GetAccel() or HeliConfig.GetDecel())
 
     -- 12-14. Sim advance + heading reanchor + soft anchor
-    FBWSimController.advanceAndAnchor(_sim, _errorTracker, desiredHX, desiredHZ,
-        deltaTime, effectiveInertia, hasHInput, posX, posZ, fps, _flightAssistOff, ctx.positionDeltaSpeed)
+    SimController.advanceAndAnchor(_sim, _errorTracker, desiredHX, desiredHZ,
+        deltaTime, effectiveInertia, hasHInput, posX, posZ, fps, _flightAssistOff, ctx.positionDeltaSpeed,
+        TRQYawController.checkHeadingReanchor)
 
     -- 15. Record in error tracker
     local simPosX, simPosZ, simVelX, simVelZ = _sim:getState()
@@ -391,7 +390,7 @@ function TRQEngine.update(ctx)
     _smoothedVelY = alpha * velY + (1.0 - alpha) * _smoothedVelY
 
     -- 17. Vertical target
-    local targetVelY, gravComp, vBraking, engineDead = FBWFlightModel.computeVerticalTarget(ctx, freeMode)
+    local targetVelY, gravComp, vBraking, engineDead = FlightModel.computeVerticalTarget(ctx, freeMode)
 
     -- Landing zone taper
     if targetVelY < 0 and currentAltitude < groundLevelZ + HeliConfig.LANDING_ZONE_HEIGHT then
@@ -428,7 +427,7 @@ function TRQEngine.update(ctx)
     -- 19b. Vertical thrust
     local verticalGain = HeliConfig.GetVerticalGain() * _adaptiveGainMultiplier
     local gravity = HeliConfig.GetGravity()
-    local verticalForce = FBWForceComputer.computeThrustForce(
+    local verticalForce = ForceComputer.computeThrustForce(
         targetVelY, _smoothedVelY, ctx.mass, verticalGain, gravity,
         ctx.subSteps, ctx.physicsDelta, gravComp)
     if verticalForce ~= 0 then
@@ -494,11 +493,11 @@ function TRQEngine.updateGround(ctx)
     -- Ensures zero accumulated angular velocity at ground→airborne transition.
     TRQTorqueController.initFromVehicle(vehicle)
 
-    if not FBWOrientation.isInitialized() then
-        FBWOrientation.initFromVehicle(ctx.angleX, ctx.angleY, ctx.angleZ)
+    if not TRQOrientation.isInitialized() then
+        TRQOrientation.initFromVehicle(ctx.angleX, ctx.angleY, ctx.angleZ)
     end
 
-    -- Read actual up-vector and heading from Bullet (same as update())
+    -- Read actual vehicle state from Bullet and update TRQOrientation
     local actUpVec = vehicle:getUpVector(ctx.scratchVector)
     local actUpX = HeliUtil.toLuaNum(actUpVec:x())
     local actUpY = HeliUtil.toLuaNum(actUpVec:y())
@@ -507,8 +506,9 @@ function TRQEngine.updateGround(ctx)
     local actFwdX = HeliUtil.toLuaNum(actFwdVec:x())
     local actFwdZ = HeliUtil.toLuaNum(actFwdVec:z())
     local actYawDeg = math.deg(math.atan2(actFwdX, actFwdZ))
+    TRQOrientation.updateActualState(actUpX, actUpY, actUpZ, actFwdX, actFwdZ, actYawDeg)
 
-    local desQuat = FBWOrientation.getQuaternion()
+    local desQuat = TRQOrientation.getQuaternion()
     -- Extract desired yaw from quaternion (same atan2 convention as actual)
     local desFwdX = 2 * (desQuat.x * desQuat.z + desQuat.w * desQuat.y)
     local desFwdZ = 1 - 2 * (desQuat.x * desQuat.x + desQuat.y * desQuat.y)
@@ -519,7 +519,7 @@ function TRQEngine.updateGround(ctx)
     local torqueX, torqueY, torqueZ = TRQTorqueController.compute(
         desQuat, desYawDeg,
         actUpX, actUpY, actUpZ, actYawDeg,
-        omegaY, dt)
+        omegaY, dt, ctx.subSteps)
 
     local subStepScale = math.max(ctx.subSteps, 1)
     TRQCoupleForce.apply(vehicle,
@@ -537,7 +537,7 @@ function TRQEngine.updateGround(ctx)
             local verticalGain = HeliConfig.GetVerticalGain()
             local gravity = HeliConfig.GetGravity()
             local ascendSpeed = HeliConfig.GetAscend()
-            local thrustY = FBWForceComputer.computeThrustForce(
+            local thrustY = ForceComputer.computeThrustForce(
                 ascendSpeed, velY, mass, verticalGain, gravity,
                 ctx.subSteps, ctx.physicsDelta, true)
             local groundHold = (1.0 - t) * HeliConfig.GROUND_VELOCITY_KILL
@@ -559,7 +559,7 @@ function TRQEngine.updateGround(ctx)
         end
         if ctx.subSteps > 0 then
             local freeMode = ctx.vehicle:getModData().AutoBalance == true
-            local targetVelY, gravComp = FBWFlightModel.computeVerticalTarget(ctx, freeMode)
+            local targetVelY, gravComp = FlightModel.computeVerticalTarget(ctx, freeMode)
             if targetVelY < 0 and ctx.currentAltitude < ctx.groundLevelZ + HeliConfig.LANDING_ZONE_HEIGHT then
                 local landingFactor = math.max((ctx.currentAltitude - ctx.groundLevelZ) / HeliConfig.LANDING_ZONE_HEIGHT, 0)
                 landingFactor = math.max(landingFactor, HeliConfig.LANDING_MIN_SPEED_FACTOR)
@@ -567,7 +567,7 @@ function TRQEngine.updateGround(ctx)
             end
             local verticalGain = HeliConfig.GetVerticalGain()
             local gravity = HeliConfig.GetGravity()
-            local forceY = FBWForceComputer.computeThrustForce(
+            local forceY = ForceComputer.computeThrustForce(
                 targetVelY, velY, mass, verticalGain, gravity,
                 ctx.subSteps, ctx.physicsDelta, gravComp)
             ctx.applyForce(0, forceY, 0)
@@ -598,7 +598,7 @@ function TRQEngine.applyCorrectionForces(cctx)
     local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxPositionError())
     local errMag = math.sqrt(errX * errX + errZ * errZ)
 
-    local fx, fz = FBWForceComputer.computeCorrectionForce(
+    local fx, fz = ForceComputer.computeCorrectionForce(
         errX, errZ, errRateX, errRateZ, errMag,
         HeliConfig.GetPositionProportionalGain(), HeliConfig.GetPositionDerivativeGain(),
         cctx.velX, cctx.velZ, cctx.mass, HeliConfig.VEL_FORCE_FACTOR,
@@ -623,7 +623,7 @@ local TUNABLE_NAMES = {
     { name = "trqCoupleOffset", label = "Couple Ofs" },
     { name = "trqOmegaAlpha",   label = "Omega EMA" },
     { name = "trqMaxTorque",    label = "Max Torque" },
-    -- Shared horizontal PD (reused from FBW params)
+    -- Shared horizontal PD (framework params)
     { name = "positionProportionalGain", label = "Pos P" },
     { name = "positionDerivativeGain",   label = "Pos D" },
     { name = "maxPositionError",         label = "Max Error" },
@@ -679,7 +679,7 @@ end
 -------------------------------------------------------------------------------------
 
 local DEBUG_COLUMNS = {
-    -- Horizontal flight model (shared with FBW)
+    -- Horizontal flight model
     "simPosX", "simPosZ", "simVelX", "simVelZ",
     "errX", "errZ", "errRateX", "errRateZ",
     "desiredVelX", "desiredVelZ", "targetVelY",
@@ -741,7 +741,7 @@ function TRQEngine.getDebugState()
 end
 
 function TRQEngine.getIntendedYaw()
-    return FBWYawController.getSimYaw() or 0
+    return TRQYawController.getSimYaw() or 0
 end
 
 -------------------------------------------------------------------------------------
