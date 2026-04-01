@@ -352,8 +352,10 @@ For project structure, API reference, and engine authoring guide, see [DEVELOPER
    - Vertical speed drop during yaw (confirmed in flight log analysis)
    - Visual jitter at high speed (micro-differences between teleport frames)
    - Reduced effective vertical rate during any orientation change
-   **Planned fix**: torque-based orientation control (dedicated branch exists). See
-   `project_hef_framework.md` knowledge doc for full implementation plan.
+   **TRQ engine** (`torque-control` branch) addresses this via couple-force torque instead
+   of setAngles. Hover hold + yaw rotation through 360°+ proven stable (~14s flights).
+   Remaining issue: tumble during sustained fast yaw + descent. See `trq_research_findings.md`
+   in memory for architecture details and remaining issues.
 
 4. **PZ grid Z vs Bullet altitude** — the helicopter is always on floor 0 in PZ's grid.
    Ghost mode prevents zombie interaction.
@@ -361,6 +363,10 @@ For project structure, API reference, and engine authoring guide, see [DEVELOPER
 5. **Turn drift reduced** — zeroing `stoppingMovementForce`, `wheelFriction`, and `rollInfluence`
    in HEFWheelInjector (needed for vertical force fix) removed the subtle drift/slide feeling
    when turning at speed. Expected to resolve with torque-based orientation control (issue 3).
+
+6. **Bullet gravity = 10.0 m/s²** — verified from `btDiscreteDynamicsWorld` default `m_gravity(0,-10,0)`.
+   PZBullet64.dll has zero gravity-setting strings (binary search). FBW's default was corrected
+   from 9.8 → 10.0 (commit 74cec6b). Saves with old default need `/hef gravity 10` or re-create.
 
 ## Removed Features
 

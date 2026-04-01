@@ -103,6 +103,7 @@ Sandbox_EN = {
 ### 5. Activate
 
 Set `HEF.FlightEngine` to `"YourEngine"` in sandbox settings or `SandboxVars.lua`.
+In-game, use `/hef engine YourEngine` to hot-switch without restart.
 
 ## IFlightEngine Interface
 
@@ -122,8 +123,8 @@ All required methods are validated at registration time. Missing a method causes
 | Tunables | `getTunable` | `(name: string) -> number` |
 | Tunables | `setTunable` | `(name: string, value: number)` |
 | Sandbox | `getSandboxOptions` | `() -> HEFSandboxOptions` |
-| Debug | `getDebugState` | `() -> table` |
-| Debug | `getDebugColumns` | `() -> string[]` |
+| Debug | `getDebugState` | `() -> table` — values keyed by column names |
+| Debug | `getDebugColumns` | `() -> string[]` — column names for flight recorder |
 | Debug | `getIntendedYaw` | `() -> number (degrees)` |
 | Commands | `getCommands` | `() -> HEFCommand[]` |
 | Commands | `executeCommand` | `(name: string, args: string) -> string` |
@@ -195,6 +196,46 @@ The correction context (`cctx`) provides `cctx.applyForce(fx, fy, fz)`, `cctx.ve
 | `liftoff` | boolean | yes | `true` = transitioning to airborne |
 | `displaySpeed` | number | yes | km/h for speedometer display |
 
+### From `getDebugColumns()` / `getDebugState()` (Flight Recorder)
+
+The `/hef record` command writes per-frame CSV. Base columns (position, velocity, timing, keys) are
+always present. Your engine's `getDebugColumns()` defines **additional columns** appended to each row.
+`getDebugState()` returns a table with values keyed by those column names.
+
+The recorder calls `getDebugColumns()` once at recording start (to write the CSV header) and
+`getDebugState()` every frame. Every column name in `getDebugColumns()` must have a corresponding
+key in the table returned by `getDebugState()`. Missing keys write as `0`.
+
+```lua
+function YourEngine.getDebugColumns()
+    return { "myError", "myForce", "myState" }
+end
+
+function YourEngine.getDebugState()
+    return {
+        myError = _lastError,
+        myForce = _lastForce,
+        myState = _lastState and 1 or 0,  -- booleans as 0/1
+    }
+end
+```
+
+## Engine Switching
+
+Players can switch engines at runtime via `/hef engine <name>`. The framework calls
+`resetFlightState()` on both the old and new engine. Your engine must handle being activated
+mid-flight (no warmup phase, no `initFlight` call). Guard initialization in `update()`:
+
+```lua
+function YourEngine.update(ctx)
+    if not _initialized then
+        _initialized = true
+        -- one-time setup that normally happens in initFlight
+    end
+    ...
+end
+```
+
 All type classes have EmmyLua `@class` annotations. Type `ctx.` in an EmmyLua-compatible IDE for full autocompletion.
 
 ## Toolkit (Optional Building Blocks)
@@ -232,6 +273,10 @@ HeliConfig.registerParams({
 
 See `FBWHeliConfig.lua` for a complete example.
 
+**Note:** All `/hef` commands, tunables, and parameter names are matched **case-insensitively**.
+Your engine's tunable names and command names can use camelCase freely — the framework lowercases
+user input before matching but preserves canonical names for display and set/get calls.
+
 ## Project Structure
 
 ```
@@ -246,7 +291,8 @@ shared/HEF/
     Util/                      HeliConfig, HeliUtil, HeliCompat, HeliTerrainUtil
   Engines/
     IFlightEngine.lua          interface + registry
-    FBW/                       reference implementation (8 files)
+    FBW/                       reference implementation (10 files)
+    TRQ/                       torque-based rotation prototype (5 files)
 
 client/HeliAbility/
   HeliSimService.lua           thin dispatcher (delegates to active engine)
