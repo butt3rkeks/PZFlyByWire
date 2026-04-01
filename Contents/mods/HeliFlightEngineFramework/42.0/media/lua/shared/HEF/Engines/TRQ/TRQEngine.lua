@@ -56,6 +56,12 @@ local _lastAngleX = 0
 local _lastFwdX = 0
 local _lastFwdZ = 0
 -- TRQ-specific: desired vs actual angles for tracking analysis
+local _lastActUpX = 0
+local _lastActUpY = 0
+local _lastActUpZ = 0
+local _lastDesUpX = 0
+local _lastDesUpY = 0
+local _lastDesUpZ = 0
 local _lastDesAngleX = 0
 local _lastDesAngleY = 0
 local _lastDesAngleZ = 0
@@ -104,6 +110,12 @@ function TRQEngine.resetFlightState()
     _lastAngleX = 0
     _lastFwdX = 0
     _lastFwdZ = 0
+    _lastActUpX = 0
+    _lastActUpY = 0
+    _lastActUpZ = 0
+    _lastDesUpX = 0
+    _lastDesUpY = 0
+    _lastDesUpZ = 0
     _lastDesAngleX = 0
     _lastDesAngleY = 0
     _lastDesAngleZ = 0
@@ -237,7 +249,14 @@ function TRQEngine.update(ctx)
         desQuat, desYawDeg,
         actUpX, actUpY, actUpZ, actYawDeg,
         omegaX, omegaY, omegaZ)
-    TRQCoupleForce.apply(vehicle, torqueX, torqueY, torqueZ)
+    -- Scale torque by substep count. Forces applied via applyImpulseGeneric are
+    -- drained from the queue on the FIRST substep only. Bullet clears forces after
+    -- each stepSimulation. At 60fps (~1.67 substeps/frame), our torque only acts
+    -- for 0.01s out of 0.0167s → 60% effective. Multiplying by subSteps makes the
+    -- angular velocity change per frame independent of frame rate.
+    -- (FBW doesn't need this because adaptive gain auto-tunes the multiplier.)
+    local subStepScale = math.max(ctx.subSteps, 1)
+    TRQCoupleForce.apply(vehicle, torqueX * subStepScale, torqueY * subStepScale, torqueZ * subStepScale)
 
     -- Persist for debug (Euler for CSV readability, from toEuler for desired)
     local desAngleX, desAngleY, desAngleZ = FBWOrientation.toEuler()
@@ -248,6 +267,13 @@ function TRQEngine.update(ctx)
     _lastOmegaY = omegaY
     _lastOmegaZ = omegaZ
     _lastAngErrMag = angErrMag
+    _lastActUpX = actUpX
+    _lastActUpY = actUpY
+    _lastActUpZ = actUpZ
+    local desUpQ = FBWOrientation.getQuaternion()
+    _lastDesUpX = 2 * (desUpQ.x * desUpQ.y + desUpQ.w * desUpQ.z)
+    _lastDesUpY = 1 - 2 * (desUpQ.x * desUpQ.x + desUpQ.z * desUpQ.z)
+    _lastDesUpZ = 2 * (desUpQ.y * desUpQ.z - desUpQ.w * desUpQ.x)
     _lastActAngleX = ctx.angleX  -- raw Euler (for CSV readability)
     _lastActAngleY = ctx.angleY
     _lastActAngleZ = ctx.angleZ
@@ -578,6 +604,9 @@ local DEBUG_COLUMNS = {
     -- TRQ desired vs actual (tracking quality)
     "desAngleX", "desAngleY", "desAngleZ",
     "actAngleX", "actAngleY", "actAngleZ",
+    -- Up-vectors (for diagnosing cross-product sign)
+    "actUpX", "actUpY", "actUpZ",
+    "desUpX", "desUpY", "desUpZ",
 }
 
 function TRQEngine.getDebugColumns()
@@ -605,6 +634,9 @@ function TRQEngine.getDebugState()
         -- Desired vs actual angles
         desAngleX = _lastDesAngleX, desAngleY = _lastDesAngleY, desAngleZ = _lastDesAngleZ,
         actAngleX = _lastActAngleX, actAngleY = _lastActAngleY, actAngleZ = _lastActAngleZ,
+        -- Up-vectors
+        actUpX = _lastActUpX, actUpY = _lastActUpY, actUpZ = _lastActUpZ,
+        desUpX = _lastDesUpX, desUpY = _lastDesUpY, desUpZ = _lastDesUpZ,
         -- Inertia (not in columns — available via /hef inertia command)
         Ix = Ix, Iy = Iy, Iz = Iz, inertiaValid = inertiaValid,
     }

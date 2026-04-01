@@ -152,12 +152,13 @@ function TRQTorqueController.compute(desQuat, desYawDeg,
 
     local desUpX, desUpY, desUpZ = quatUpVector(desQuat.w, desQuat.x, desQuat.y, desQuat.z)
 
-    -- Cross product: desired_up × actual_up = correction torque direction.
-    -- (NOT actual × desired — that gives the opposite direction, pushing
-    -- the helicopter AWAY from desired instead of toward it.)
-    local crossX = desUpY * actUpZ - desUpZ * actUpY
-    local crossY = desUpZ * actUpX - desUpX * actUpZ
-    local crossZ = desUpX * actUpY - desUpY * actUpX
+    -- Cross product: actual_up × desired_up = rotation axis from actual to desired.
+    -- The axis of rotation that takes vector A to vector B is A × B (right-hand rule).
+    -- Verified: pitch forward (desUp toward -Z) → act × des gives -X torque → tilts toward -Z ✓
+    --          roll right (desUp toward -X)     → act × des gives +Z torque → tilts toward -X ✓
+    local crossX = actUpY * desUpZ - actUpZ * desUpY
+    local crossY = actUpZ * desUpX - actUpX * desUpZ
+    local crossZ = actUpX * desUpY - actUpY * desUpX
 
     -- For small angles: |cross| ≈ sin(angle) ≈ angle. For large angles,
     -- scale by angle/sin(angle) to get true angular error.
