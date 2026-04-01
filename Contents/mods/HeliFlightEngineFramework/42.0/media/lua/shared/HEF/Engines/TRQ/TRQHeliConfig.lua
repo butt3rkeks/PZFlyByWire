@@ -12,12 +12,14 @@
 
 local TRQ_PARAMS = {
     -- Angular PD gains (inertia-normalized: rad/s² per rad error)
+    -- Critical damping: D = 2*sqrt(P). P=20 → D_crit=8.9. P=15 → D_crit=7.7.
+    -- Slight overdamping preferred for robustness against gyroscopic coupling.
     trqPitchPGain  = { default = 20.0, min = 0.1, max = 500.0, desc = "Pitch P gain (rad/s² per rad error, inertia-normalized)" },
-    trqPitchDGain  = { default = 6.0,  min = 0.0, max = 100.0, desc = "Pitch D gain (damping, inertia-normalized)" },
+    trqPitchDGain  = { default = 10.0, min = 0.0, max = 100.0, desc = "Pitch D gain (damping, inertia-normalized)" },
     trqRollPGain   = { default = 20.0, min = 0.1, max = 500.0, desc = "Roll P gain (rad/s² per rad error, inertia-normalized)" },
-    trqRollDGain   = { default = 6.0,  min = 0.0, max = 100.0, desc = "Roll D gain (damping, inertia-normalized)" },
+    trqRollDGain   = { default = 10.0, min = 0.0, max = 100.0, desc = "Roll D gain (damping, inertia-normalized)" },
     trqYawPGain    = { default = 15.0, min = 0.1, max = 500.0, desc = "Yaw P gain (rad/s² per rad error, inertia-normalized)" },
-    trqYawDGain    = { default = 5.0,  min = 0.0, max = 100.0, desc = "Yaw D gain (damping, inertia-normalized)" },
+    trqYawDGain    = { default = 8.0,  min = 0.0, max = 100.0, desc = "Yaw D gain (damping, inertia-normalized)" },
 
     -- Couple-force geometry
     trqCoupleOffset = { default = 1.0,  min = 0.1, max = 5.0,    desc = "Couple-force offset distance (meters)" },

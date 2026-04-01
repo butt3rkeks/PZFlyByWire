@@ -153,9 +153,11 @@ function TRQTorqueController.compute(desQuat, desYawDeg,
     local desUpX, desUpY, desUpZ = quatUpVector(desQuat.w, desQuat.x, desQuat.y, desQuat.z)
 
     -- Cross product: actual_up × desired_up = rotation axis from actual to desired.
-    -- The axis of rotation that takes vector A to vector B is A × B (right-hand rule).
-    -- Verified: pitch forward (desUp toward -Z) → act × des gives -X torque → tilts toward -Z ✓
-    --          roll right (desUp toward -X)     → act × des gives +Z torque → tilts toward -X ✓
+    -- This is the SO(3)-correct error direction (confirmed by aerospace literature).
+    -- `desired × actual` has wrong P-term sign (backward pitch on tilt input) but
+    -- appeared more stable during yaw because the wrong sign reduced effective gain.
+    -- `actual × desired` is correct but requires adequate D-gain (>= 2*sqrt(P) ≈ 9
+    -- for critical damping) to maintain stability under gyroscopic coupling.
     local crossX = actUpY * desUpZ - actUpZ * desUpY
     local crossY = actUpZ * desUpX - actUpX * desUpZ
     local crossZ = actUpX * desUpY - actUpY * desUpX
@@ -180,85 +182,86 @@ function TRQTorqueController.compute(desQuat, desYawDeg,
 
     local angErrMag = sqrt(worldErrX * worldErrX + errY * errY + worldErrZ * worldErrZ)
 
-    -- === PD IN BODY FRAME with FULL ROTATION MATRIX ===
-    -- The Z-axis cross product gives world-frame error. Per-axis inertia is
-    -- only correct in body frame (Ix=pitch, Iz=roll). We rotate world→body
-    -- for PD, then body→world for couple forces.
+    -- === WORLD-FRAME INERTIA TENSOR PD ===
+    -- Instead of rotating error/torque between body and world frames (which caused
+    -- cross-coupling bugs from R-transpose confusion and frame mismatches), we
+    -- transform the inertia tensor to world frame: I_world = R * I_body * R^T.
     --
-    -- Full 3x3 rotation matrix reconstructed from up-vector + heading.
-    -- No Euler angles in this path — up-vector is direct from Bullet.
+    -- Everything stays in world frame: error, omega, inertia, torque.
+    -- The non-diagonal I_world automatically handles the physical axis coupling
+    -- (e.g., at 30° heading, world-X torque needs world-Z contribution and vice versa).
     --
-    -- R columns = body axes in world frame:
-    --   Column 1 (body Y / up) = actUp (from vehicle:getUpVector)
-    --   Column 2 (body Z / forward) = constructed from heading + up
-    --   Column 0 (body X / right) = forward × up (completes the frame)
-    local omegaXRad = rad(omegaX)  -- already body-frame from quat estimator
-    local omegaYRad = rad(omegaY)
-    local omegaZRad = rad(omegaZ)
+    -- Mathematically identical to R^T→PD→R but eliminates frame confusion.
+    -- Source: Lee, Leok, McClamroch (2010), Gaffer on Games, research agent analysis.
 
-    -- Construct forward direction from heading, projected perpendicular to up.
-    -- Raw heading direction in world horizontal plane:
+    -- Build rotation matrix R from up-vector + forward-vector (Gram-Schmidt).
+    -- R columns = body axes in world frame.
     local headingRad = rad(actYawDeg)
-    local rawFwdX = math.sin(headingRad)   -- heading → world X component
-    local rawFwdZ = math.cos(headingRad)   -- heading → world Z component
-    -- Project heading perpendicular to up-vector (Gram-Schmidt):
-    --   fwd = rawFwd - (rawFwd · up) * up, then normalize
-    local dotFU = rawFwdX * actUpX + 0 * actUpY + rawFwdZ * actUpZ
+    local rawFwdX = math.sin(headingRad)
+    local rawFwdZ = math.cos(headingRad)
+    local dotFU = rawFwdX * actUpX + rawFwdZ * actUpZ
     local fwdX = rawFwdX - dotFU * actUpX
-    local fwdY = 0       - dotFU * actUpY
+    local fwdY = -dotFU * actUpY
     local fwdZ = rawFwdZ - dotFU * actUpZ
     local fwdLen = sqrt(fwdX*fwdX + fwdY*fwdY + fwdZ*fwdZ)
     if fwdLen > 0.0001 then
         fwdX = fwdX / fwdLen; fwdY = fwdY / fwdLen; fwdZ = fwdZ / fwdLen
     else
-        -- Degenerate (up-vector aligned with heading) — fallback to heading-only
         fwdX = rawFwdX; fwdY = 0; fwdZ = rawFwdZ
     end
-    -- Right = forward × up (completes right-handed frame)
     local rgtX = fwdY * actUpZ - fwdZ * actUpY
     local rgtY = fwdZ * actUpX - fwdX * actUpZ
     local rgtZ = fwdX * actUpY - fwdY * actUpX
 
-    -- R matrix: columns are body axes in world frame
-    -- Column 0 = right (body X), Column 1 = up (body Y), Column 2 = forward (body Z)
-    local r00, r10, r20 = rgtX, rgtY, rgtZ      -- body X in world
-    local r01, r11, r21 = actUpX, actUpY, actUpZ -- body Y in world
-    local r02, r12, r22 = fwdX, fwdY, fwdZ      -- body Z in world
+    -- R: columns are [right(bodyX), up(bodyY), forward(bodyZ)] in world coords
+    local r00, r10, r20 = rgtX, rgtY, rgtZ
+    local r01, r11, r21 = actUpX, actUpY, actUpZ
+    local r02, r12, r22 = fwdX, fwdY, fwdZ
 
-    -- Rotate world error to body frame: body = R^T * world
-    local bodyErrX = r00 * worldErrX + r10 * worldErrY + r20 * worldErrZ
-    local bodyErrZ = r02 * worldErrX + r12 * worldErrY + r22 * worldErrZ
+    -- I_world = R * diag(Ix,Iy,Iz) * R^T (symmetric 3x3)
+    -- Element [i][j] = sum_k( R[i][k] * I_k * R[j][k] )
+    local Iw00 = r00*r00*_Ix + r01*r01*_Iy + r02*r02*_Iz
+    local Iw01 = r00*r10*_Ix + r01*r11*_Iy + r02*r12*_Iz
+    local Iw02 = r00*r20*_Ix + r01*r21*_Iy + r02*r22*_Iz
+    local Iw11 = r10*r10*_Ix + r11*r11*_Iy + r12*r12*_Iz
+    local Iw12 = r10*r20*_Ix + r11*r21*_Iy + r12*r22*_Iz
+    local Iw22 = r20*r20*_Ix + r21*r21*_Iy + r22*r22*_Iz
 
-    -- PD in body frame with body inertia (omega already body-frame)
+    -- Omega: body-frame from quaternion estimator → rotate to world via R
+    local omegaXRad = rad(omegaX)
+    local omegaYRad = rad(omegaY)
+    local omegaZRad = rad(omegaZ)
+    local wOmX = r00*omegaXRad + r01*omegaYRad + r02*omegaZRad
+    local wOmY = r10*omegaXRad + r11*omegaYRad + r12*omegaZRad
+    local wOmZ = r20*omegaXRad + r21*omegaYRad + r22*omegaZRad
+
+    -- PD correction in world frame (P and D gains are scalar, same for all axes)
+    local P_tilt = HeliConfig.GetTrqPitchPGain()  -- use pitch gain for all tilt
+    local D_tilt = HeliConfig.GetTrqPitchDGain()
+    local corrX = P_tilt * worldErrX - D_tilt * wOmX
+    local corrZ = P_tilt * worldErrZ - D_tilt * wOmZ
+
+    -- Yaw PD (scalar, independent)
+    local corrY = HeliConfig.GetTrqYawPGain() * errY - HeliConfig.GetTrqYawDGain() * wOmY
+
+    -- World torque = I_world * correction (includes cross-coupling from off-diagonal terms)
     local maxTorque = HeliConfig.GetTrqMaxTorque()
-
-    local bodyTorqueX = _Ix * (HeliConfig.GetTrqPitchPGain() * bodyErrX - HeliConfig.GetTrqPitchDGain() * omegaXRad)
-    local torqueY     = _Iy * (HeliConfig.GetTrqYawPGain()   * errY     - HeliConfig.GetTrqYawDGain()   * omegaYRad)
-    local bodyTorqueZ = _Iz * (HeliConfig.GetTrqRollPGain()  * bodyErrZ - HeliConfig.GetTrqRollDGain()  * omegaZRad)
-
-    bodyTorqueX = clamp(bodyTorqueX, -maxTorque, maxTorque)
-    bodyTorqueZ = clamp(bodyTorqueZ, -maxTorque, maxTorque)
-
-    -- Rotate body torque to world frame: world = R * body
-    local torqueX = r00 * bodyTorqueX + r02 * bodyTorqueZ
-    local torqueZ = r20 * bodyTorqueX + r22 * bodyTorqueZ
-    -- (Y component: r10*bodyTorqueX + r12*bodyTorqueZ adds tilt-coupling to yaw — include it)
-    torqueY = torqueY + r10 * bodyTorqueX + r12 * bodyTorqueZ
+    local torqueX = Iw00*corrX + Iw01*corrY + Iw02*corrZ
+    local torqueY = Iw01*corrX + Iw11*corrY + Iw12*corrZ
+    local torqueZ = Iw02*corrX + Iw12*corrY + Iw22*corrZ
 
     -- === GYROSCOPIC FEEDFORWARD (tunable, default OFF) ===
-    -- Computed in body frame (I diagonal), rotated to world via full R.
+    -- omega × (I_world * omega) in world frame.
     local gyroScale = HeliConfig.GetTrqGyroScale()
     if gyroScale > 0 then
-        local Iox = _Ix * omegaXRad
-        local Ioy = _Iy * omegaYRad
-        local Ioz = _Iz * omegaZRad
-        local gyroX = omegaYRad * Ioz - omegaZRad * Ioy
-        local gyroY = omegaZRad * Iox - omegaXRad * Ioz
-        local gyroZ = omegaXRad * Ioy - omegaYRad * Iox
-        -- Rotate body gyro to world via full R
-        torqueX = torqueX + gyroScale * (r00 * gyroX + r01 * gyroY + r02 * gyroZ)
-        torqueY = torqueY + gyroScale * (r10 * gyroX + r11 * gyroY + r12 * gyroZ)
-        torqueZ = torqueZ + gyroScale * (r20 * gyroX + r21 * gyroY + r22 * gyroZ)
+        -- I_world * omega_world
+        local IwX = Iw00*wOmX + Iw01*wOmY + Iw02*wOmZ
+        local IwY = Iw01*wOmX + Iw11*wOmY + Iw12*wOmZ
+        local IwZ = Iw02*wOmX + Iw12*wOmY + Iw22*wOmZ
+        -- omega × (I_world * omega)
+        torqueX = torqueX + gyroScale * (wOmY*IwZ - wOmZ*IwY)
+        torqueY = torqueY + gyroScale * (wOmZ*IwX - wOmX*IwZ)
+        torqueZ = torqueZ + gyroScale * (wOmX*IwY - wOmY*IwX)
     end
 
     torqueX = clamp(torqueX, -maxTorque, maxTorque)
