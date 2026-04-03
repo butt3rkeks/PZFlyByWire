@@ -416,6 +416,33 @@ disturbance (or any external torque) from persisting in the estimator state.
 
 The `adaptAlpha` value is logged as a debug column in flight recorder CSV files.
 
+### ADRC Engine: Clean Cascaded-Loop Architecture (2026-04-03)
+
+Third flight engine, registered as "ADRC" via `IFlightEngine.register`. Files in `Engines/ADRC/`.
+No SimModel2D, no ErrorTracker, no correction forces. Designed following real flight controller
+architecture (ArduPilot/PX4/Betaflight cascaded loops).
+
+**Key design decisions:**
+- **Two-phase exact ESO**: models pulsed input timing (control 0.01s, coast T-0.01s). Discrete
+  gains adapt to any frame rate. Unconditionally stable (no Euler dt×wo limit).
+- **World-up vertical thrust**: decoupled from tilt. Body-up thrust creates runaway feedback
+  (tilt→horizontal component→ForceComputer increases thrust→more horizontal). TODO: tilt-aware
+  ForceComputer for horizontal movement.
+- **Heading-relative tilt axes**: pitch/roll input rotated by heading so "forward" is always
+  relative to the helicopter's facing direction. Required for correct directional control.
+- **Velocity-proportional drag**: always active, replaces sim-based position correction.
+- **Yaw coast-to-stop**: exponentially decaying yaw rate after key release. No angular damping
+  in PZBullet (verified = 0.0), so active braking is required.
+- **ESO warmup ramp**: lives in torque controller (not engine) so ground mode gets it too.
+  Ramps from 30% to 100% of observer bandwidth over 20 frames after liftoff.
+- **Vertical substep compensation**: only gravity comp gets ×(N-1) boost, not the PD term.
+
+**Verified correct:**
+- Sign chain: cross-product error → body projection → ADRC torque → couple force. Correct at
+  all headings (traced analytically at heading 0° and -86°).
+- ESO gain formula K2=(1-a)²(5+a)/(2T) verified numerically (char poly = (z-a)³ to 1e-15).
+- Rotation center = model center. ESO b=1/I_box matches Bullet's solver.
+
 ## Removed Features
 
 - **Coordinated turn** — banking into turns (UP + A/D) added roll via `HeliConfig.COORDINATED_TURN_FACTOR`.

@@ -291,6 +291,7 @@ shared/HEF/
     Util/                      HeliConfig, HeliUtil, HeliCompat, HeliTerrainUtil
   Engines/
     IFlightEngine.lua          interface + registry
+    ADRC/                      cascaded-loop ADRC engine, no sim model (5 files)
     FBW/                       reference implementation (10 files)
     TRQ/                       torque-based rotation prototype (5 files)
 

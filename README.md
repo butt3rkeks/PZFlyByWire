@@ -1,6 +1,6 @@
 # Helicopter Flight Engine Framework (HEF)
 
-A pluggable flight engine framework for Project Zomboid helicopter mods (Build 42). Ships with the **FBW (Fly-By-Wire)** engine.
+A pluggable flight engine framework for Project Zomboid helicopter mods (Build 42). Ships with three flight engines: **FBW** (Fly-By-Wire, simulation-based), **TRQ** (Torque, physics-based rotation), and **ADRC** (Active Disturbance Rejection Control, cascaded-loop architecture).
 
 ## What It Does
 
