@@ -30,6 +30,16 @@ local function wrapAngle(d)
 end
 
 -------------------------------------------------------------------------------------
+-- Force application at center of mass.
+-- applyImpulseGeneric applies force at a WORLD POSITION. Bullet computes torque
+-- from (applicationPoint - centerOfMass). If force is applied at model origin
+-- (getX/Y/Z) but the CoM is offset, every force creates unintended torque.
+-- UH-1B has CoM 1.6m forward of model origin: a 40kN vertical braking force
+-- at model origin creates 64kNm of phantom pitch torque.
+-- This function applies force at the CoM position to eliminate phantom torque.
+-------------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------------
 local _hasTiltInput = false
 local _hasHorizontalInput = false
 local _flightAssistOff = false
@@ -38,61 +48,33 @@ local _simInitialized = false
 local _tireInflationSet = false
 -- _wasGroundMode removed: TRQ uses torque in ground mode (no setAngles discontinuity)
 local _smoothedVelY = 0
+-- Input rate smoothing: ramp key input rates through first-order filter
+-- to prevent step changes that cause ADRC torque saturation.
+local _smoothedYawRate = 0
+local _smoothedPitchRate = 0
+local _smoothedRollRate = 0
 local _adaptiveGainMultiplier = 1.0
 local _rampedTargetVelY = 0  -- smoothed vertical target (prevents 220kN force spikes)
 
--- Debug state (persisted for getDebugState / recorder)
-local _lastTorqueX = 0
-local _lastTorqueY = 0
-local _lastTorqueZ = 0
-local _lastOmegaX = 0
-local _lastOmegaY = 0
-local _lastOmegaZ = 0
-local _lastAngErrMag = 0
--- Flight pipeline state
-local _lastDesiredHX = 0
-local _lastDesiredHZ = 0
-local _lastTargetVelY = 0
-local _lastAngleZ = 0
-local _lastAngleX = 0
-local _lastFwdX = 0
-local _lastFwdZ = 0
--- Body-frame torques (what couple forces actually receive)
-local _lastBodyTorqueX = 0
-local _lastBodyTorqueY = 0
-local _lastBodyTorqueZ = 0
--- Controller internals (for diagnosing sign issues)
-local _lastCtrlDesYaw = 0
-local _lastCtrlActYaw = 0
-local _lastCtrlErrY = 0
-local _lastCtrlWOmX = 0
-local _lastCtrlWOmY = 0
-local _lastCtrlWOmZ = 0
-local _lastEffIwx = 0
-local _lastEffIwz = 0
-local _lastCorrFX = 0
-local _lastCorrFZ = 0
-local _lastVertForce = 0
-local _lastPitchDelta = 0
-local _lastRollDelta = 0
-local _lastYawLead = 0
-local _lastRateCmdX = 0
-local _lastRateCmdZ = 0
-local _lastIntegralX = 0
-local _lastIntegralZ = 0
--- TRQ-specific: desired vs actual angles for tracking analysis
-local _lastActUpX = 0
-local _lastActUpY = 0
-local _lastActUpZ = 0
-local _lastDesUpX = 0
-local _lastDesUpY = 0
-local _lastDesUpZ = 0
-local _lastDesAngleX = 0
-local _lastDesAngleY = 0
-local _lastDesAngleZ = 0
-local _lastActAngleX = 0
-local _lastActAngleY = 0
-local _lastActAngleZ = 0
+-- Debug state packed into one table to stay under Kahlua's 60-upvalue limit.
+-- All _last* fields are write-once-per-frame, read by getDebugState/recorder.
+local _dbg = {
+    torqueX=0, torqueY=0, torqueZ=0,
+    omegaX=0, omegaY=0, omegaZ=0, angErrMag=0,
+    desiredHX=0, desiredHZ=0, targetVelY=0,
+    angleZ=0, angleX=0, fwdX=0, fwdZ=0,
+    bodyTorqueX=0, bodyTorqueY=0, bodyTorqueZ=0,
+    ctrlDesYaw=0, ctrlActYaw=0, ctrlErrY=0,
+    ctrlWOmX=0, ctrlWOmY=0, ctrlWOmZ=0,
+    effIwx=0, effIwz=0,
+    corrFX=0, corrFZ=0, vertForce=0,
+    pitchDelta=0, rollDelta=0, yawLead=0,
+    rateCmdX=0, rateCmdZ=0, integralX=0, integralZ=0,
+    actUpX=0, actUpY=0, actUpZ=0,
+    desUpX=0, desUpY=0, desUpZ=0,
+    desAngleX=0, desAngleY=0, desAngleZ=0,
+    actAngleX=0, actAngleY=0, actAngleZ=0,
+}
 
 -------------------------------------------------------------------------------------
 -- Toolkit instances
@@ -119,52 +101,55 @@ function TRQEngine.resetFlightState()
     _warmupCounter = HeliConfig.GetTrqWarmupFrames()
     _simInitialized = false
     _smoothedVelY = 0
+    _smoothedYawRate = 0
+    _smoothedPitchRate = 0
+    _smoothedRollRate = 0
     _rampedTargetVelY = 0
     _adaptiveGainMultiplier = 1.0
 
-    _lastTorqueX = 0
-    _lastTorqueY = 0
-    _lastTorqueZ = 0
-    _lastBodyTorqueX = 0
-    _lastBodyTorqueY = 0
-    _lastBodyTorqueZ = 0
-    _lastCtrlDesYaw = 0
-    _lastCtrlActYaw = 0
-    _lastCtrlErrY = 0
-    _lastCtrlWOmX = 0
-    _lastCtrlWOmY = 0
-    _lastCtrlWOmZ = 0
-    _lastEffIwx = 0
-    _lastEffIwz = 0
-    _lastCorrFX = 0; _lastCorrFZ = 0
-    _lastVertForce = 0
-    _lastPitchDelta = 0; _lastRollDelta = 0
-    _lastYawLead = 0
-    _lastRateCmdX = 0; _lastRateCmdZ = 0
-    _lastIntegralX = 0; _lastIntegralZ = 0
-    _lastOmegaX = 0
-    _lastOmegaY = 0
-    _lastOmegaZ = 0
-    _lastAngErrMag = 0
-    _lastDesiredHX = 0
-    _lastDesiredHZ = 0
-    _lastTargetVelY = 0
-    _lastAngleZ = 0
-    _lastAngleX = 0
-    _lastFwdX = 0
-    _lastFwdZ = 0
-    _lastActUpX = 0
-    _lastActUpY = 0
-    _lastActUpZ = 0
-    _lastDesUpX = 0
-    _lastDesUpY = 0
-    _lastDesUpZ = 0
-    _lastDesAngleX = 0
-    _lastDesAngleY = 0
-    _lastDesAngleZ = 0
-    _lastActAngleX = 0
-    _lastActAngleY = 0
-    _lastActAngleZ = 0
+    _dbg.torqueX = 0
+    _dbg.torqueY = 0
+    _dbg.torqueZ = 0
+    _dbg.bodyTorqueX = 0
+    _dbg.bodyTorqueY = 0
+    _dbg.bodyTorqueZ = 0
+    _dbg.ctrlDesYaw = 0
+    _dbg.ctrlActYaw = 0
+    _dbg.ctrlErrY = 0
+    _dbg.ctrlWOmX = 0
+    _dbg.ctrlWOmY = 0
+    _dbg.ctrlWOmZ = 0
+    _dbg.effIwx = 0
+    _dbg.effIwz = 0
+    _dbg.corrFX = 0; _dbg.corrFZ = 0
+    _dbg.vertForce = 0
+    _dbg.pitchDelta = 0; _dbg.rollDelta = 0
+    _dbg.yawLead = 0
+    _dbg.rateCmdX = 0; _dbg.rateCmdZ = 0
+    _dbg.integralX = 0; _dbg.integralZ = 0
+    _dbg.omegaX = 0
+    _dbg.omegaY = 0
+    _dbg.omegaZ = 0
+    _dbg.angErrMag = 0
+    _dbg.desiredHX = 0
+    _dbg.desiredHZ = 0
+    _dbg.targetVelY = 0
+    _dbg.angleZ = 0
+    _dbg.angleX = 0
+    _dbg.fwdX = 0
+    _dbg.fwdZ = 0
+    _dbg.actUpX = 0
+    _dbg.actUpY = 0
+    _dbg.actUpZ = 0
+    _dbg.desUpX = 0
+    _dbg.desUpY = 0
+    _dbg.desUpZ = 0
+    _dbg.desAngleX = 0
+    _dbg.desAngleY = 0
+    _dbg.desAngleZ = 0
+    _dbg.actAngleX = 0
+    _dbg.actAngleY = 0
+    _dbg.actAngleZ = 0
 
     TRQOrientation.reset()
     TRQYawController.reset()
@@ -257,8 +242,13 @@ function TRQEngine.update(ctx)
     local actUpZ = HeliUtil.toLuaNum(actUpVec:z())
     local actFwdVec = vehicle:getForwardVector(ctx.scratchVector)
     local actFwdX = HeliUtil.toLuaNum(actFwdVec:x())
+    local actFwdY = HeliUtil.toLuaNum(actFwdVec:y())
     local actFwdZ = HeliUtil.toLuaNum(actFwdVec:z())
     local actYawDeg = math.deg(math.atan2(actFwdX, actFwdZ))
+    -- Body right = up x forward (right-handed: Y x Z = X in Bullet coords)
+    local actRightX = actUpY * actFwdZ - actUpZ * actFwdY
+    local actRightY = actUpZ * actFwdX - actUpX * actFwdZ
+    local actRightZ = actUpX * actFwdY - actUpY * actFwdX
     TRQOrientation.updateActualState(actUpX, actUpY, actUpZ, actFwdX, actFwdZ, actYawDeg)
 
     -- 2. Key input → rotation deltas (torque-tailored: NO auto-level in desired state)
@@ -275,37 +265,57 @@ function TRQEngine.update(ctx)
     end
     local angle_90 = math.rad(90)
 
-    -- Yaw (A/D)
-    if keys.a then yawDelta = HeliConfig.GetYawRotationSpeed() * fpsMultiplier; isRotating = true end
-    if keys.d then yawDelta = -HeliConfig.GetYawRotationSpeed() * fpsMultiplier; isRotating = true end
+    -- Yaw (A/D) — raw target rate from key state
+    local rawYawRate = 0
+    if keys.a then rawYawRate = HeliConfig.GetYawRotationSpeed(); isRotating = true end
+    if keys.d then rawYawRate = -HeliConfig.GetYawRotationSpeed(); isRotating = true end
 
-    -- Pitch (UP/DOWN) — key input only, no auto-level
+    -- Pitch (UP/DOWN) — raw target rate from key state
+    local rawPitchRate = 0
     if keys.up and not keys.left and not keys.right then
         local bodyPitch = TRQOrientation.getBodyPitch()
         if bodyPitch < angle_90 + maxSpeed and not blocked.up then
-            pitchDelta = basicAccelRate * fpsMultiplier
+            rawPitchRate = basicAccelRate
         end
     elseif keys.down and not keys.left and not keys.right then
         local bodyPitch = TRQOrientation.getBodyPitch()
         if bodyPitch > angle_90 - maxSpeed and not blocked.down then
-            pitchDelta = -basicAccelRate * fpsMultiplier
+            rawPitchRate = -basicAccelRate
         end
     end
-    -- NO auto-level on pitch release: PD handles return-to-level via desired=level target
 
-    -- Roll (LEFT/RIGHT) — key input only, no auto-level
+    -- Roll (LEFT/RIGHT) — raw target rate from key state
+    local rawRollRate = 0
     if keys.left and not keys.up and not keys.down then
         local bodyRoll = TRQOrientation.getBodyRoll()
         if bodyRoll < angle_90 + maxSpeed and not blocked.left then
-            rollDelta = -basicAccelRate * fpsMultiplier
+            rawRollRate = -basicAccelRate
         end
     elseif keys.right and not keys.up and not keys.down then
         local bodyRoll = TRQOrientation.getBodyRoll()
         if bodyRoll > angle_90 - maxSpeed and not blocked.right then
-            rollDelta = basicAccelRate * fpsMultiplier
+            rawRollRate = basicAccelRate
         end
     end
-    -- NO auto-level on roll release: PD handles return-to-level
+
+    -- First-order smoothing: ramp rates instead of stepping.
+    -- Prevents ADRC torque saturation on key press/release.
+    local tau = HeliConfig.GetTrqInputSmoothingTau()
+    local dt_input = 1.0 / ctx.fps
+    if tau > 0.001 then
+        local alpha = 1.0 - math.exp(-dt_input / tau)
+        _smoothedYawRate   = _smoothedYawRate   + (rawYawRate   - _smoothedYawRate)   * alpha
+        _smoothedPitchRate = _smoothedPitchRate + (rawPitchRate - _smoothedPitchRate) * alpha
+        _smoothedRollRate  = _smoothedRollRate  + (rawRollRate  - _smoothedRollRate)  * alpha
+    else
+        _smoothedYawRate   = rawYawRate
+        _smoothedPitchRate = rawPitchRate
+        _smoothedRollRate  = rawRollRate
+    end
+
+    pitchDelta = _smoothedPitchRate * fpsMultiplier
+    rollDelta  = _smoothedRollRate  * fpsMultiplier
+    yawDelta   = _smoothedYawRate   * fpsMultiplier
 
     -- 3. Apply tilt + yaw to TRQOrientation (desired orientation)
     TRQOrientation.applyTilt(pitchDelta, rollDelta)
@@ -366,6 +376,8 @@ function TRQEngine.update(ctx)
     -- (it builds quaternion from Euler — unique, no flip issue)
     local dt = 1.0 / ctx.fps
     local omegaX, omegaY, omegaZ = TRQAngularEstimator.update(ctx.angleX, ctx.angleY, ctx.angleZ, dt)
+    -- Body-frame ADRC: pass body axes so error is projected onto body pitch/roll.
+    -- Returns body-frame torques: X=pitch, Y=yaw, Z=roll.
     local torqueX, torqueY, torqueZ, angErrMag,
           ctrlDesYaw, ctrlActYaw, ctrlErrY, ctrlWOmX, ctrlWOmY, ctrlWOmZ,
           effIwx, effIwz,
@@ -373,64 +385,77 @@ function TRQEngine.update(ctx)
         TRQTorqueController.compute(
             desUpX, desUpY, desUpZ, desYawDeg,
             actUpX, actUpY, actUpZ, actYawDeg,
-            omegaY, dt, ctx.subSteps)
+            actRightX, actRightY, actRightZ,
+            actFwdX, actFwdY, actFwdZ,
+            dt, ctx.subSteps)
 
-    -- NO substep multiplier. The force acts for one 0.01s substep regardless of
-    -- frame substep count. FBW KNOWLEDGE.md: "Multiplying by subSteps caused a
-    -- subSteps² effect" — the alternating 1/2 substeps create ±100% gain variation
-    -- that pumps energy into tilt oscillation (parametric excitation). PD gains are
-    -- tuned for the actual per-substep response instead.
-    TRQCoupleForce.apply(vehicle, torqueX, torqueY, torqueZ)
+    -- Apply body-frame torque via body-aligned couple forces.
+    -- applyBodyAligned uses body axes to orient the couple force offsets/directions
+    -- so the torque acts around body pitch/roll/yaw axes regardless of heading.
+    --
+    -- Substep compensation (A/B testable via trqSubstepCompensation param):
+    -- Forces are drained in the first substep only (queue clears). When enabled,
+    -- multiply by N so one substep delivers the full frame's angular impulse.
+    -- When disabled (default), the ESO's x3 absorbs the 1/N mismatch.
+    local substepMul = 1
+    if HeliConfig.GetTrqSubstepCompensation() >= 1 then
+        substepMul = math.max(ctx.subSteps or 1, 1)
+    end
+    TRQCoupleForce.applyBodyAligned(vehicle,
+        torqueX * substepMul, torqueY * substepMul, torqueZ * substepMul,
+        actRightX, actRightY, actRightZ,
+        actUpX, actUpY, actUpZ,
+        actFwdX, actFwdY, actFwdZ)
 
     -- Persist for debug
     local desAngleX, desAngleY, desAngleZ = TRQOrientation.toEuler()
-    _lastTorqueX = torqueX  -- world-frame (= actual applied torque)
-    _lastTorqueY = torqueY
-    _lastTorqueZ = torqueZ
-    _lastBodyTorqueX = torqueX  -- same as world (uniform inertia, no body transform)
-    _lastBodyTorqueY = torqueY
-    _lastBodyTorqueZ = torqueZ
-    _lastOmegaX = omegaX
-    _lastOmegaY = omegaY
-    _lastOmegaZ = omegaZ
-    _lastAngErrMag = angErrMag
-    _lastCtrlDesYaw = ctrlDesYaw or 0
-    _lastCtrlActYaw = ctrlActYaw or 0
-    _lastCtrlErrY = ctrlErrY or 0
-    _lastCtrlWOmX = ctrlWOmX or 0
-    _lastCtrlWOmY = ctrlWOmY or 0
-    _lastCtrlWOmZ = ctrlWOmZ or 0
-    _lastEffIwx = effIwx or 0
-    _lastEffIwz = effIwz or 0
-    _lastPitchDelta = pitchDelta
-    _lastRollDelta = rollDelta
-    _lastRateCmdX = rateCmdX or 0
-    _lastRateCmdZ = rateCmdZ or 0
-    _lastIntegralX = integralX or 0
-    _lastIntegralZ = integralZ or 0
-    _lastYawLead = wrapAngle(rawDesYawDeg - actYawDeg)
-    _lastActUpX = actUpX
-    _lastActUpY = actUpY
-    _lastActUpZ = actUpZ
-    _lastDesUpX = desUpX  -- tilt-only up-vector (heading-independent)
-    _lastDesUpY = desUpY
-    _lastDesUpZ = desUpZ
-    _lastActAngleX = ctx.angleX  -- raw Euler (for CSV readability)
-    _lastActAngleY = ctx.angleY
-    _lastActAngleZ = ctx.angleZ
-    _lastDesAngleX = desAngleX
-    _lastDesAngleY = desAngleY
-    _lastDesAngleZ = desAngleZ
+    _dbg.torqueX = torqueX  -- world-frame (= actual applied torque)
+    _dbg.torqueY = torqueY
+    _dbg.torqueZ = torqueZ
+    _dbg.bodyTorqueX = torqueX  -- same as world (uniform inertia, no body transform)
+    _dbg.bodyTorqueY = torqueY
+    _dbg.bodyTorqueZ = torqueZ
+    _dbg.omegaX = omegaX
+    _dbg.omegaY = omegaY
+    _dbg.omegaZ = omegaZ
+    _dbg.angErrMag = angErrMag
+    _dbg.ctrlDesYaw = ctrlDesYaw or 0
+    _dbg.ctrlActYaw = ctrlActYaw or 0
+    _dbg.ctrlErrY = ctrlErrY or 0
+    _dbg.ctrlWOmX = ctrlWOmX or 0
+    _dbg.ctrlWOmY = ctrlWOmY or 0
+    _dbg.ctrlWOmZ = ctrlWOmZ or 0
+    _dbg.effIwx = effIwx or 0
+    _dbg.effIwz = effIwz or 0
+    _dbg.pitchDelta = pitchDelta
+    _dbg.rollDelta = rollDelta
+    _dbg.rateCmdX = rateCmdX or 0
+    _dbg.rateCmdZ = rateCmdZ or 0
+    _dbg.integralX = integralX or 0
+    _dbg.integralZ = integralZ or 0
+    _dbg.yawLead = wrapAngle(rawDesYawDeg - actYawDeg)
+    _dbg.actUpX = actUpX
+    _dbg.actUpY = actUpY
+    _dbg.actUpZ = actUpZ
+    _dbg.desUpX = desUpX  -- tilt-only up-vector (heading-independent)
+    _dbg.desUpY = desUpY
+    _dbg.desUpZ = desUpZ
+    _dbg.actAngleX = ctx.angleX  -- raw Euler (for CSV readability)
+    _dbg.actAngleY = ctx.angleY
+    _dbg.actAngleZ = ctx.angleZ
+    _dbg.desAngleX = desAngleX
+    _dbg.desAngleY = desAngleY
+    _dbg.desAngleZ = desAngleZ
 
     -- 6. Read forward direction + body angles from desired orientation
     -- Read body angles from TRQOrientation for the flight model
     local fwdX, fwdZ = TRQOrientation.getForward()
     local angleZ = TRQOrientation.getBodyPitch()
     local angleX = TRQOrientation.getBodyRoll()
-    _lastAngleZ = angleZ
-    _lastAngleX = angleX
-    _lastFwdX = fwdX
-    _lastFwdZ = fwdZ
+    _dbg.angleZ = angleZ
+    _dbg.angleX = angleX
+    _dbg.fwdX = fwdX
+    _dbg.fwdZ = fwdZ
 
     -- 7-8. Wall pre-blocking + FlightFilters pipeline → desired horizontal velocity
     local posX = ctx.posX
@@ -504,9 +529,9 @@ function TRQEngine.update(ctx)
     local targetVelY = _rampedTargetVelY
 
     -- Persist flight model outputs for debug
-    _lastDesiredHX = desiredHX
-    _lastDesiredHZ = desiredHZ
-    _lastTargetVelY = targetVelY
+    _dbg.desiredHX = desiredHX
+    _dbg.desiredHZ = desiredHZ
+    _dbg.targetVelY = targetVelY
 
     -- 18. Dual-path activation
     local errX, errZ, errRateX, errRateZ = _errorTracker:getError(HeliConfig.GetMaxPositionError())
@@ -534,7 +559,7 @@ function TRQEngine.update(ctx)
     local verticalForce = ForceComputer.computeThrustForce(
         targetVelY, _smoothedVelY, ctx.mass, verticalGain, gravity,
         ctx.subSteps, ctx.physicsDelta, gravComp)
-    _lastVertForce = verticalForce
+    _dbg.vertForce = verticalForce
     if verticalForce ~= 0 then
         ctx.applyForce(0, verticalForce, 0)
     end
@@ -609,8 +634,12 @@ function TRQEngine.updateGround(ctx)
     local actUpZ = HeliUtil.toLuaNum(actUpVec:z())
     local actFwdVec = vehicle:getForwardVector(ctx.scratchVector)
     local actFwdX = HeliUtil.toLuaNum(actFwdVec:x())
+    local actFwdY = HeliUtil.toLuaNum(actFwdVec:y())
     local actFwdZ = HeliUtil.toLuaNum(actFwdVec:z())
     local actYawDeg = math.deg(math.atan2(actFwdX, actFwdZ))
+    local actRightX = actUpY * actFwdZ - actUpZ * actFwdY
+    local actRightY = actUpZ * actFwdX - actUpX * actFwdZ
+    local actRightZ = actUpX * actFwdY - actUpY * actFwdX
     TRQOrientation.updateActualState(actUpX, actUpY, actUpZ, actFwdX, actFwdZ, actYawDeg)
 
     -- Desired up-vector from tilt only (heading-independent)
@@ -626,13 +655,20 @@ function TRQEngine.updateGround(ctx)
     local torqueX, torqueY, torqueZ = TRQTorqueController.compute(
         desUpX, desUpY, desUpZ, desYawDeg,
         actUpX, actUpY, actUpZ, actYawDeg,
-        omegaY, dt, ctx.subSteps)
+        actRightX, actRightY, actRightZ,
+        actFwdX, actFwdY, actFwdZ,
+        dt, ctx.subSteps)
 
-    -- NO substep multiplier — same as airborne mode. The parametric excitation bug
-    -- (alternating 1/2 substeps create ±100% gain variation) was fixed in airborne
-    -- but this ground mode path was missed. Couple forces act for exactly one 0.01s
-    -- substep regardless of frame substep count.
-    TRQCoupleForce.apply(vehicle, torqueX, torqueY, torqueZ)
+    -- Substep compensation: same toggle as main flight path
+    local substepMul = 1
+    if HeliConfig.GetTrqSubstepCompensation() >= 1 then
+        substepMul = math.max(ctx.subSteps or 1, 1)
+    end
+    TRQCoupleForce.applyBodyAligned(vehicle,
+        torqueX * substepMul, torqueY * substepMul, torqueZ * substepMul,
+        actRightX, actRightY, actRightZ,
+        actUpX, actUpY, actUpZ,
+        actFwdX, actFwdY, actFwdZ)
 
     -- Sim re-anchor during transition
     if inTransition then
@@ -714,8 +750,8 @@ function TRQEngine.applyCorrectionForces(cctx)
         HeliConfig.GetFinalStopDampingGain(), _flightAssistOff,
         HeliConfig.GetTrqFaOffDeadzone(), HeliConfig.GetTrqFaOffMinDamping())
 
-    _lastCorrFX = fx
-    _lastCorrFZ = fz
+    _dbg.corrFX = fx
+    _dbg.corrFZ = fz
     cctx.applyForce(fx, 0, fz)
 end
 
@@ -832,29 +868,29 @@ function TRQEngine.getDebugState()
         simVelX = simVelX, simVelZ = simVelZ,
         errX = errX, errZ = errZ,
         errRateX = errRateX, errRateZ = errRateZ,
-        desiredVelX = _lastDesiredHX, desiredVelZ = _lastDesiredHZ,
-        targetVelY = _lastTargetVelY,
-        angleZ = _lastAngleZ, angleX = _lastAngleX,
-        fwdX = _lastFwdX, fwdZ = _lastFwdZ,
+        desiredVelX = _dbg.desiredHX, desiredVelZ = _dbg.desiredHZ,
+        targetVelY = _dbg.targetVelY,
+        angleZ = _dbg.angleZ, angleX = _dbg.angleX,
+        fwdX = _dbg.fwdX, fwdZ = _dbg.fwdZ,
         -- TRQ angular PD
-        torqueX = _lastTorqueX, torqueY = _lastTorqueY, torqueZ = _lastTorqueZ,
-        bodyTorqueX = _lastBodyTorqueX, bodyTorqueY = _lastBodyTorqueY, bodyTorqueZ = _lastBodyTorqueZ,
-        omegaX = _lastOmegaX, omegaY = _lastOmegaY, omegaZ = _lastOmegaZ,
-        angErrMag = _lastAngErrMag,
+        torqueX = _dbg.torqueX, torqueY = _dbg.torqueY, torqueZ = _dbg.torqueZ,
+        bodyTorqueX = _dbg.bodyTorqueX, bodyTorqueY = _dbg.bodyTorqueY, bodyTorqueZ = _dbg.bodyTorqueZ,
+        omegaX = _dbg.omegaX, omegaY = _dbg.omegaY, omegaZ = _dbg.omegaZ,
+        angErrMag = _dbg.angErrMag,
         -- Desired vs actual angles
-        desAngleX = _lastDesAngleX, desAngleY = _lastDesAngleY, desAngleZ = _lastDesAngleZ,
-        actAngleX = _lastActAngleX, actAngleY = _lastActAngleY, actAngleZ = _lastActAngleZ,
+        desAngleX = _dbg.desAngleX, desAngleY = _dbg.desAngleY, desAngleZ = _dbg.desAngleZ,
+        actAngleX = _dbg.actAngleX, actAngleY = _dbg.actAngleY, actAngleZ = _dbg.actAngleZ,
         -- Up-vectors
-        actUpX = _lastActUpX, actUpY = _lastActUpY, actUpZ = _lastActUpZ,
-        desUpX = _lastDesUpX, desUpY = _lastDesUpY, desUpZ = _lastDesUpZ,
+        actUpX = _dbg.actUpX, actUpY = _dbg.actUpY, actUpZ = _dbg.actUpZ,
+        desUpX = _dbg.desUpX, desUpY = _dbg.desUpY, desUpZ = _dbg.desUpZ,
         -- Controller internals
-        ctrlDesYaw = _lastCtrlDesYaw, ctrlActYaw = _lastCtrlActYaw, ctrlErrY = _lastCtrlErrY,
-        ctrlWOmX = _lastCtrlWOmX, ctrlWOmY = _lastCtrlWOmY, ctrlWOmZ = _lastCtrlWOmZ,
-        effIwx = _lastEffIwx, effIwz = _lastEffIwz,
-        corrFX = _lastCorrFX, corrFZ = _lastCorrFZ, vertForce = _lastVertForce,
-        pitchDelta = _lastPitchDelta, rollDelta = _lastRollDelta, yawLead = _lastYawLead,
-        rateCmdX = _lastRateCmdX, rateCmdZ = _lastRateCmdZ,
-        integralX = _lastIntegralX, integralZ = _lastIntegralZ,
+        ctrlDesYaw = _dbg.ctrlDesYaw, ctrlActYaw = _dbg.ctrlActYaw, ctrlErrY = _dbg.ctrlErrY,
+        ctrlWOmX = _dbg.ctrlWOmX, ctrlWOmY = _dbg.ctrlWOmY, ctrlWOmZ = _dbg.ctrlWOmZ,
+        effIwx = _dbg.effIwx, effIwz = _dbg.effIwz,
+        corrFX = _dbg.corrFX, corrFZ = _dbg.corrFZ, vertForce = _dbg.vertForce,
+        pitchDelta = _dbg.pitchDelta, rollDelta = _dbg.rollDelta, yawLead = _dbg.yawLead,
+        rateCmdX = _dbg.rateCmdX, rateCmdZ = _dbg.rateCmdZ,
+        integralX = _dbg.integralX, integralZ = _dbg.integralZ,
         -- Inertia (not in columns — available via /hef inertia command)
         Ix = Ix, Iy = Iy, Iz = Iz, inertiaValid = inertiaValid,
     }

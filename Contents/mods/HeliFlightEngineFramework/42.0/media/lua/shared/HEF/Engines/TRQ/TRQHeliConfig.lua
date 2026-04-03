@@ -11,22 +11,28 @@
 -------------------------------------------------------------------------------------
 
 local TRQ_PARAMS = {
-    -- Angular PD gains (inertia-normalized: rad/s² per rad error)
-    -- Cascaded rate controller:
-    -- Outer loop: position error → bounded rate command
-    -- Inner loop: rate tracking with PI (proportional + integral)
-    -- Integral handles persistent disturbances (phantom torque during descent)
-    trqOuterPGain  = { default = 5.0,  min = 0.1, max = 50.0,  desc = "Outer loop: position error → rate command gain" },
-    trqMaxRate     = { default = 2.0,  min = 0.1, max = 10.0,  desc = "Max commanded angular rate (rad/s)" },
-    trqInnerPGain  = { default = 20.0, min = 0.1, max = 100.0, desc = "Inner loop: rate error P gain" },
-    trqInnerIGain  = { default = 5.0,  min = 0.0, max = 50.0,  desc = "Inner loop: integral gain (disturbance rejection)" },
-    trqMaxIntegral = { default = 3.0,  min = 0.1, max = 20.0,  desc = "Anti-windup clamp on integral" },
-    -- Legacy PD gains (kept for reference, used by yaw outer loop P)
-    trqPitchPGain  = { default = 33.0, min = 0.1, max = 500.0, desc = "Legacy pitch P (unused by rate controller)" },
-    trqPitchDGain  = { default = 15.0, min = 0.0, max = 100.0, desc = "Legacy pitch D (unused by rate controller)" },
+    -- ADRC / Extended State Observer (ESO) parameters
+    -- Replaces the cascaded rate controller with direct disturbance estimation.
+    -- ESO observes the tilt/yaw error, estimates angular rate AND unknown disturbance
+    -- torque in real-time, then cancels the disturbance in the control law.
+    -- wo = observer bandwidth (how fast the ESO tracks disturbances)
+    -- wc = controller bandwidth (how fast the controller corrects errors)
+    -- Rule of thumb: wo = 5-10× wc for good separation.
+    trqEsoWo       = { default = 30.0, min = 0.0,  max = 100.0, desc = "ESO observer bandwidth (rad/s, higher=faster disturbance tracking)" },
+    trqEsoWcTilt   = { default = 5.0,  min = 0.0,  max = 20.0,  desc = "ADRC tilt controller bandwidth (rad/s)" },
+    trqEsoWcYaw    = { default = 3.0,  min = 0.0,  max = 15.0,  desc = "ADRC yaw controller bandwidth (rad/s)" },
+
+    -- Legacy params (kept for reference / fallback)
+    trqOuterPGain  = { default = 5.0,  min = 0.1, max = 50.0,  desc = "Legacy: outer loop P gain (unused by ADRC)" },
+    trqMaxRate     = { default = 2.0,  min = 0.1, max = 10.0,  desc = "Legacy: max rate (unused by ADRC)" },
+    trqInnerPGain  = { default = 20.0, min = 0.1, max = 100.0, desc = "Legacy: inner loop P (unused by ADRC)" },
+    trqInnerIGain  = { default = 5.0,  min = 0.0, max = 50.0,  desc = "Legacy: inner loop I (unused by ADRC)" },
+    trqMaxIntegral = { default = 3.0,  min = 0.1, max = 20.0,  desc = "Legacy: integral clamp (unused by ADRC)" },
+    trqPitchPGain  = { default = 33.0, min = 0.1, max = 500.0, desc = "Legacy pitch P (unused)" },
+    trqPitchDGain  = { default = 15.0, min = 0.0, max = 100.0, desc = "Legacy pitch D (unused)" },
     trqRollPGain   = { default = 33.0, min = 0.1, max = 500.0, desc = "Legacy roll P (unused)" },
     trqRollDGain   = { default = 15.0, min = 0.0, max = 100.0, desc = "Legacy roll D (unused)" },
-    trqYawPGain    = { default = 5.0,  min = 0.1, max = 50.0,  desc = "Yaw outer loop P gain" },
+    trqYawPGain    = { default = 5.0,  min = 0.1, max = 50.0,  desc = "Legacy yaw P (unused by ADRC)" },
     trqYawDGain    = { default = 10.0, min = 0.0, max = 100.0, desc = "Legacy yaw D (unused)" },
 
     -- Couple-force geometry
@@ -39,7 +45,15 @@ local TRQ_PARAMS = {
     trqOmegaAlpha   = { default = 0.4,  min = 0.0, max = 1.0,    desc = "Omega blend: measurement weight (0=predict, 1=measure)" },
 
     -- Safety limits
-    trqMaxTorque    = { default = 200000.0, min = 100.0, max = 500000.0, desc = "Max torque budget (Nm), allocated with tilt priority" },
+    trqMaxTorque    = { default = 200000.0, min = 0.0, max = 500000.0, desc = "Max torque budget (Nm), allocated with tilt priority" },
+
+    -- Diagnostics: inertia measurement mode.
+    -- 0 = off (normal ADRC). 1 = pitch pulse. 2 = roll pulse. 3 = yaw pulse.
+    -- When active: disables ESO, applies fixed 10000 Nm torque on selected axis
+    -- for 60 frames, then 0 for 60 frames, repeating. Log captures actual angular
+    -- rate in the ESO diagnostic columns for inertia calculation.
+    trqDiagPulseAxis = { default = 0, min = 0, max = 3, desc = "Diag: 0=off, 1=pitch pulse, 2=roll pulse, 3=yaw pulse" },
+    trqDiagPulseTorque = { default = 10000, min = 0, max = 200000, desc = "Diag: pulse torque magnitude (Nm)" },
 
     -- Gyroscopic feedforward scale (0=disabled, 1=full cancellation)
     trqGyroScale    = { default = 0.0, min = 0.0, max = 2.0, desc = "Gyroscopic feedforward scale (0=off, 1=full)" },
@@ -76,9 +90,22 @@ local TRQ_PARAMS = {
 
     -- Warmup
     trqWarmupFrames = { default = 20, min = 1, max = 120, desc = "Warmup frames before torque control activates" },
+
+    -- Input rate smoothing time constant (seconds). Key inputs command angular rates
+    -- that ramp through a first-order filter instead of stepping instantly.
+    -- Higher = smoother (less torque spike on key press/release), lower = snappier.
+    -- 0 = disabled (raw step input, causes ±200kNm saturation on every key event).
+    trqInputSmoothingTau = { default = 0.2, min = 0.0, max = 2.0, desc = "Input rate smoothing time constant (seconds, 0=off)" },
+
+    -- Substep compensation: multiply applied torque by physics substep count.
+    -- 0 = off (ESO absorbs the 1/N mismatch via x3 disturbance estimate).
+    -- 1 = on (torque × N so one substep delivers full frame's angular impulse).
+    -- Risk: if Lua substep count desyncs from Java's, gain swings 1x↔4x per frame.
+    trqSubstepCompensation = { default = 0, min = 0, max = 1, desc = "Substep torque compensation (0=off/safe, 1=on/precise but sync-sensitive)" },
 }
 
 local TRQ_PARAM_ORDER = {
+    "trqEsoWo", "trqEsoWcTilt", "trqEsoWcYaw",
     "trqOuterPGain", "trqMaxRate", "trqInnerPGain", "trqInnerIGain", "trqMaxIntegral",
     "trqPitchPGain", "trqPitchDGain", "trqRollPGain", "trqRollDGain",
     "trqYawPGain", "trqYawDGain",
@@ -90,6 +117,8 @@ local TRQ_PARAM_ORDER = {
     "trqGroundVelocityKill", "trqGroundVelocityThreshold",
     "trqLandingZoneHeight", "trqLandingMinSpeedFactor",
     "trqWarmupFrames",
+    "trqInputSmoothingTau",
+    "trqSubstepCompensation",
 }
 
 HeliConfig.registerParams(TRQ_PARAMS, TRQ_PARAM_ORDER)
@@ -98,7 +127,13 @@ HeliConfig.registerParams(TRQ_PARAMS, TRQ_PARAM_ORDER)
 -- Typed getters: TRQ params. Defined on HeliConfig for uniform access.
 -------------------------------------------------------------------------------------
 
---- @return number Pitch proportional gain (inertia-normalized)
+--- @return number ESO observer bandwidth (rad/s)
+function HeliConfig.GetTrqEsoWo() return HeliConfig.get("trqEsoWo") end
+--- @return number ADRC tilt controller bandwidth (rad/s)
+function HeliConfig.GetTrqEsoWcTilt() return HeliConfig.get("trqEsoWcTilt") end
+--- @return number ADRC yaw controller bandwidth (rad/s)
+function HeliConfig.GetTrqEsoWcYaw() return HeliConfig.get("trqEsoWcYaw") end
+--- @return number Legacy outer P gain
 function HeliConfig.GetTrqOuterPGain() return HeliConfig.get("trqOuterPGain") end
 function HeliConfig.GetTrqMaxRate() return HeliConfig.get("trqMaxRate") end
 function HeliConfig.GetTrqInnerPGain() return HeliConfig.get("trqInnerPGain") end
@@ -121,6 +156,8 @@ function HeliConfig.GetTrqCoupleOffset() return HeliConfig.get("trqCoupleOffset"
 function HeliConfig.GetTrqOmegaAlpha() return HeliConfig.get("trqOmegaAlpha") end
 --- @return number Max torque per axis
 function HeliConfig.GetTrqMaxTorque() return HeliConfig.get("trqMaxTorque") end
+function HeliConfig.GetTrqDiagPulseAxis() return HeliConfig.get("trqDiagPulseAxis") end
+function HeliConfig.GetTrqDiagPulseTorque() return HeliConfig.get("trqDiagPulseTorque") end
 --- @return number Gyroscopic feedforward scale (0=off, 1=full)
 function HeliConfig.GetTrqGyroScale() return HeliConfig.get("trqGyroScale") end
 --- @return number Inertia correction factor (Bullet effective / analytical)
@@ -142,3 +179,7 @@ function HeliConfig.GetTrqGroundVelocityThreshold() return HeliConfig.get("trqGr
 function HeliConfig.GetTrqLandingZoneHeight() return HeliConfig.get("trqLandingZoneHeight") end
 function HeliConfig.GetTrqLandingMinSpeedFactor() return HeliConfig.get("trqLandingMinSpeedFactor") end
 function HeliConfig.GetTrqWarmupFrames() return HeliConfig.get("trqWarmupFrames") end
+--- @return number Input smoothing tau (seconds, 0=off)
+function HeliConfig.GetTrqInputSmoothingTau() return HeliConfig.get("trqInputSmoothingTau") end
+--- @return number 0=off, 1=on
+function HeliConfig.GetTrqSubstepCompensation() return HeliConfig.get("trqSubstepCompensation") end

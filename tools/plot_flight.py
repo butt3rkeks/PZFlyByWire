@@ -75,8 +75,12 @@ def group_columns(numeric_cols):
 
     # Define grouping rules: columns sharing a prefix or known groups
     known_groups = [
-        (["torqueX", "torqueY", "torqueZ"], "Torque (Nm)"),
+        (["torqueX", "torqueY", "torqueZ"], "World Torque (Nm)"),
+        (["bodyTorqueX", "bodyTorqueY", "bodyTorqueZ"], "Body Torque (Nm)"),
         (["omegaX", "omegaY", "omegaZ"], "Angular Velocity (deg/s)"),
+        (["ctrlDesYaw", "ctrlActYaw"], "Ctrl Yaw Des/Act (deg)"),
+        (["ctrlErrY"], "Ctrl Yaw Error (deg)"),
+        (["ctrlWOmX", "ctrlWOmY", "ctrlWOmZ"], "ESO Rate Estimate (rad/s)"),
         (["desAngleX", "desAngleY", "desAngleZ"], "Desired Angles (deg)"),
         (["actAngleX", "actAngleY", "actAngleZ"], "Actual Angles (deg)"),
         (["desiredVelX", "desiredVelZ"], "Desired Vel XZ (m/s)"),
@@ -88,6 +92,9 @@ def group_columns(numeric_cols):
         (["fwdX", "fwdZ"], "Forward Dir"),
         (["angleZ", "angleX"], "Body Angles (rad)"),
         (["actualX", "actualZ"], "Position XZ"),
+        (["effIwx", "effIwz"], "Effective Inertia (heading-corrected)"),
+        (["rateCmdX", "rateCmdZ"], "ESO Disturbance Est (rad/s^2)"),
+        (["integralX", "integralZ"], "ESO Error Est (rad)"),
     ]
 
     for cols, label in known_groups:

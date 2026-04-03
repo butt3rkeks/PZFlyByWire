@@ -1,29 +1,31 @@
 --[[
-    TRQTorqueController — Body-frame ADRC angular controller with ESO
+    ADRCTorqueController -- Body-frame ADRC angular controller with exact ESO
 
     Operates in BODY frame: pitch (body-X/right), roll (body-Z/forward), yaw (body-Y/up).
-    Each axis has a 3rd-order ESO with CONSTANT b = 1/I_body (no heading dependency).
+    Each axis has a 3rd-order ESO with CONSTANT b = 1/I_body.
 
-    Previous world-frame approach had 11:1 inertia ratio swing at cardinal headings
-    (I_wx oscillated between Ix=14013 and Iz=1189 depending on heading). The Z-axis
-    ESO overreacted at cardinal headings, causing cross-axis tumble during descent.
+    ESO uses two-phase exact discretization (research_fps_independence.md Method 1):
+      Phase 1: predict with control active for dt_s=0.01s (one Bullet substep)
+      Phase 2: predict with zero control for (T - dt_s)
+      Correct: discrete observer gains place triple pole at z = e^(-wo*T)
+    This eliminates the timing mismatch artifact where the ESO absorbs 1/N
+    substep error as false disturbance. Unconditionally stable at any FPS.
 
-    Body-frame fix: b_pitch = 1/Ix (constant), b_roll = 1/Iz (constant).
-    The cross-product error (world frame) is projected onto body axes via dot products.
-    Torque output is in body frame, applied via TRQCoupleForce.applyBodyAligned.
+    Analytical inertia from physicsChassisShape (box inertia formula).
+    ESO bandwidth ramp at startup (warmup period).
 
-    Depends only on HeliConfig. Torque output is body-frame (X=pitch, Y=yaw, Z=roll).
+    Depends only on HeliConfig (via ADRCHeliConfig getters).
+    Torque output is body-frame (X=pitch, Y=yaw, Z=roll).
 ]]
 
-TRQTorqueController = {}
+ADRCTorqueController = {}
 
 local toLuaNum = HeliUtil.toLuaNum
 local rad = math.rad
 local acos = math.acos
 local sqrt = math.sqrt
 local abs = math.abs
-local cos = math.cos
-local sin = math.sin
+local exp = math.exp
 
 local function clamp(v, lo, hi)
     if v < lo then return lo end
@@ -41,22 +43,27 @@ end
 -------------------------------------------------------------------------------------
 -- State
 -------------------------------------------------------------------------------------
-local _Ix = 1   -- body pitch inertia (includes parallel axis from CoM offset)
+local _Ix = 1   -- body pitch inertia
 local _Iy = 1   -- body yaw inertia
 local _Iz = 1   -- body roll inertia
 local _inertiaValid = false
+local _mass = 1
 
--- ESO state per BODY axis
-local _esoPitch = {x1 = 0, x2 = 0, x3 = 0}  -- body-X (right axis)
-local _esoRoll  = {x1 = 0, x2 = 0, x3 = 0}  -- body-Z (forward axis)
-local _esoYaw   = {x1 = 0, x2 = 0, x3 = 0}  -- body-Y (up axis)
+-- ESO state per body axis
+local _esoPitch = {x1 = 0, x2 = 0, x3 = 0}
+local _esoRoll  = {x1 = 0, x2 = 0, x3 = 0}
+local _esoYaw   = {x1 = 0, x2 = 0, x3 = 0}
 
 -- Last frame's applied torque per body axis (after allocation)
 local _uPrevPitch = 0
-local _uPrevRoll = 0
-local _uPrevYaw = 0
+local _uPrevRoll  = 0
+local _uPrevYaw   = 0
 
 local _esoInitialized = false
+
+-- Internal warmup: ramps ESO bandwidth from low to full over N frames.
+-- Lives here (not in ADRCEngine) so ALL callers (update + updateGround) get the ramp.
+local _woRampFrame = 0
 
 -- Diagnostic pulse state
 local _diagFrameCount = 0
@@ -65,33 +72,32 @@ local _diagPrevUpY = nil
 local _diagPrevUpZ = nil
 local _diagPrevYawRad = nil
 
--- Center of mass offset (script coords)
-local _comX = 0
-local _comY = 0
-local _comZ = 0
-local _mass = 1
+-------------------------------------------------------------------------------------
+-- ESO core: Two-phase exact discretization
+-------------------------------------------------------------------------------------
 
--------------------------------------------------------------------------------------
--- ESO core: 3rd-order linear Extended State Observer
--------------------------------------------------------------------------------------
+--- Bullet fixed substep duration (seconds).
+local DT_SUBSTEP = 0.01
 
 --- Two-phase exact ESO update with predictor-corrector architecture.
 ---
 --- Models the actual physics timing: torque active for dt_s=0.01s (one Bullet
 --- substep), then zero for (T - dt_s). The plant is a triple integrator
---- (y'' = b*u + f), so the free prediction is exact polynomial — no exp needed.
+--- (y'' = b*u + f), so the free prediction is exact polynomial.
 ---
---- Discrete observer gains place a triple pole at z = e^(-wo*T), adapting
---- automatically to any frame interval T. Unconditionally stable (no Euler
---- dt*wo limit, no sub-stepping).
+--- Discrete observer gains place a triple pole at z = e^(-wo*T).
+--- Unconditionally stable (no Euler dt*wo limit, no sub-stepping needed).
 ---
---- Derivation verified: characteristic polynomial of (Phi_free - K*C) matches
---- (z - e^(-wo*T))³ to machine precision. See research_fps_independence.md.
-local DT_SUBSTEP = 0.01  -- Bullet fixed substep duration
-
+--- @param eso table ESO state {x1, x2, x3}
+--- @param y number Measurement (angular error, radians)
+--- @param b number Control effectiveness (1/I_body)
+--- @param u_prev number Previous control output (torque Nm)
+--- @param wo number Observer bandwidth (rad/s)
+--- @param dt number Frame time (seconds)
+--- @param maxDist number|nil Optional disturbance clamp
 local function esoUpdate(eso, y, b, u_prev, wo, dt, maxDist)
     local T = dt
-    if T < 0.001 then T = 0.001 end  -- guard against zero/tiny dt
+    if T < 0.001 then T = 0.001 end
 
     -- Phase 1: predict with control active (dt_s seconds)
     local ds = DT_SUBSTEP
@@ -106,15 +112,13 @@ local function esoUpdate(eso, y, b, u_prev, wo, dt, maxDist)
     local T2 = T - ds
     if T2 > 0 then
         local T2sq = T2 * T2
-        local x1_p = x1_1 + x2_1 * T2 + x3_1 * T2sq / 2
-        local x2_p = x2_1 + x3_1 * T2
-        x1_1 = x1_p
-        x2_1 = x2_p
+        x1_1 = x1_1 + x2_1 * T2 + x3_1 * T2sq / 2
+        x2_1 = x2_1 + x3_1 * T2
         -- x3 unchanged (constant disturbance model)
     end
 
     -- Discrete observer gains: triple pole at z = e^(-wo*T)
-    local a = math.exp(-wo * T)
+    local a = exp(-wo * T)
     local oma = 1 - a
     local K1 = 3 * oma
     local K2 = oma * oma * (5 + a) / (2 * T)
@@ -131,14 +135,19 @@ local function esoUpdate(eso, y, b, u_prev, wo, dt, maxDist)
     end
 end
 
---- ADRC control: u = (x3 + wc²·x1 + 2·wc·x2) / b
+--- ADRC control law: u = (x3 + wc^2 * x1 + 2*wc * x2) / b
+--- Combines proportional (x1), derivative (x2), and disturbance rejection (x3).
+--- @param eso table ESO state
+--- @param wc number Controller bandwidth (rad/s)
+--- @param b number Control effectiveness (1/I_body)
+--- @return number torque (Nm)
 local function adrcControl(eso, wc, b)
     local wc2 = wc * wc
     return (eso.x3 + wc2 * eso.x1 + 2 * wc * eso.x2) / b
 end
 
 -------------------------------------------------------------------------------------
--- Vector3f reading (for inertia)
+-- Vector3f reading (for inertia computation from vehicle script)
 -------------------------------------------------------------------------------------
 
 local function tryReadVec3(vec)
@@ -157,29 +166,20 @@ local function tryReadVec3(vec)
     end
     local s = tostring(vec)
     if s then
-        local a, b, c = s:match("([%d%.%-]+)[,%s]+([%d%.%-]+)[,%s]+([%d%.%-]+)")
-        if a then return tonumber(a), tonumber(b), tonumber(c) end
+        local va, vb, vc = s:match("([%d%.%-]+)[,%s]+([%d%.%-]+)[,%s]+([%d%.%-]+)")
+        if va then return tonumber(va), tonumber(vb), tonumber(vc) end
     end
     return nil, nil, nil
 end
 
-local function tryReadVec3Component(vec, comp)
-    if not vec then return nil end
-    local ok, v = pcall(function() return toLuaNum(vec[comp](vec)) end)
-    if ok and v then return v end
-    ok, v = pcall(function()
-        local getter = "get" .. comp:upper()
-        return toLuaNum(vec[getter](vec))
-    end)
-    if ok and v then return v end
-    return nil
-end
-
 -------------------------------------------------------------------------------------
--- Inertia computation
+-- Inertia computation from vehicle script
 -------------------------------------------------------------------------------------
 
-function TRQTorqueController.initFromVehicle(vehicle)
+--- Compute body-frame inertia tensor from physicsChassisShape (box approximation).
+--- Called once per vehicle. API returns post-scaled values (modelScale already applied).
+--- @param vehicle BaseVehicle
+function ADRCTorqueController.initFromVehicle(vehicle)
     if _inertiaValid then return end
 
     local mass = toLuaNum(vehicle:getMass())
@@ -196,58 +196,26 @@ function TRQTorqueController.initFromVehicle(vehicle)
         if ok and shape then ex, ey, ez = tryReadVec3(shape) end
     end
 
-    local corrFactor = HeliConfig.GetTrqInertiaCorrectionFactor()
+    local corrFactor = HeliConfig.GetAdrcInertiaCorrFactor()
 
     if ex and ey and ez and not (ex == 0 and ey == 0 and ez == 0) then
-        local modelScale = 0
-    local okScale, sc = pcall(function() return toLuaNum(script:getModelScale()) end)
-    if okScale and sc then modelScale = sc end
-    print("[TRQ] Extents from API: (" .. string.format("%.4f, %.4f, %.4f", ex, ey, ez) .. ") mass=" .. string.format("%.0f", mass) .. " modelScale=" .. string.format("%.4f", modelScale))
-        -- Box inertia from extents (script coords: X=lat, Y=height, Z=length)
+        -- Box inertia from extents (script coords: X=lateral, Y=height, Z=length)
         _Ix = (mass / 12) * (ey * ey + ez * ez) * corrFactor
         _Iy = (mass / 12) * (ex * ex + ez * ez) * corrFactor
         _Iz = (mass / 12) * (ex * ex + ey * ey) * corrFactor
-        print("[TRQ] Box inertia (x" .. string.format("%.2f", corrFactor) .. "): Ix="
+        print("[ADRC] Box inertia (x" .. string.format("%.2f", corrFactor) .. "): Ix="
             .. string.format("%.1f", _Ix) .. " Iy=" .. string.format("%.1f", _Iy)
-            .. " Iz=" .. string.format("%.1f", _Iz))
+            .. " Iz=" .. string.format("%.1f", _Iz)
+            .. " mass=" .. string.format("%.0f", mass))
     else
+        -- Fallback: uniform sphere
         local r = 1.5
         local I = 0.4 * mass * r * r * corrFactor
         _Ix = I; _Iy = I; _Iz = I
-        print("[TRQ] WARNING: Could not read vehicle extents. Using fallback inertia: " .. string.format("%.1f", I))
+        print("[ADRC] WARNING: No extents. Fallback inertia: " .. string.format("%.1f", I))
     end
-
-    -- The analytical box inertia from physicsChassisShape IS correct for the ESO.
-    -- Previous "measured" values (Ix=20840, Iy=18575, Iz=1426) were inflated by a
-    -- factor of N (physics substeps per frame) because:
-    --   1. Forces are queued in OnTick (once per render frame)
-    --   2. Java drains the queue in the FIRST substep only
-    --   3. Remaining N-1 substeps get zero torque from us
-    --   4. Parabolic fit measures alpha = T/(N*I), so I_measured = N * I_actual
-    -- The fix: multiply applied torque by N so one substep delivers the full
-    -- frame's angular impulse. Then analytical I is correct for the ESO.
-    -- (See inertia_investigation.md for full derivation.)
-    print("[TRQ] Using analytical box inertia: Ix=" .. string.format("%.1f", _Ix)
-        .. " Iy=" .. string.format("%.1f", _Iy) .. " Iz=" .. string.format("%.1f", _Iz))
 
     _mass = mass
-    local comSX, comSY, comSZ = 0, 0, 0
-    local okCoM, com = pcall(function() return script:getCenterOfMassOffset() end)
-    if okCoM and com then
-        comSX = tryReadVec3Component(com, "x") or 0
-        comSY = tryReadVec3Component(com, "y") or 0
-        comSZ = tryReadVec3Component(com, "z") or 0
-    end
-    print("[TRQ] CoM from API: (" .. string.format("%.4f, %.4f, %.4f", comSX, comSY, comSZ) .. ")")
-    -- Also log getExtents() for comparison with physicsChassisShape
-    local ext2x, ext2y, ext2z
-    local okExt2, ext2 = pcall(function() return script:getExtents() end)
-    if okExt2 and ext2 then ext2x, ext2y, ext2z = tryReadVec3(ext2) end
-    if ext2x then
-        print("[TRQ] getExtents() = (" .. string.format("%.4f, %.4f, %.4f", ext2x, ext2y, ext2z) .. ")")
-    end
-    _comX = comSX; _comY = comSY; _comZ = comSZ
-
     _inertiaValid = true
 end
 
@@ -255,45 +223,48 @@ end
 -- Body-frame ADRC controller
 -------------------------------------------------------------------------------------
 
---- Compute body-frame torque using ADRC with ESO.
+--- Compute body-frame torque using ADRC with two-phase exact ESO.
 --- @param desUpX number Desired up-vector X (Bullet coords: X=east, Y=up, Z=north)
 --- @param desUpY number Desired up-vector Y
 --- @param desUpZ number Desired up-vector Z
 --- @param desYawDeg number Desired yaw (degrees)
---- @param actUpX number Actual up-vector X (Bullet coords, from vehicle:getUpVector)
+--- @param actUpX number Actual up-vector X
 --- @param actUpY number Actual up-vector Y
 --- @param actUpZ number Actual up-vector Z
 --- @param actYawDeg number Actual yaw (degrees)
---- @param rightX number Body right-axis X (Bullet coords, = up × forward)
+--- @param rightX number Body right-axis X (Bullet world coords)
 --- @param rightY number Body right-axis Y
 --- @param rightZ number Body right-axis Z
---- @param fwdX number Body forward-axis X (Bullet coords, from vehicle:getForwardVector)
+--- @param fwdX number Body forward-axis X
 --- @param fwdY number Body forward-axis Y
 --- @param fwdZ number Body forward-axis Z
 --- @param dt number Frame time (seconds)
 --- @param subSteps number Bullet substeps this frame
---- @return number bodyTorqueX (pitch), bodyTorqueY (yaw), bodyTorqueZ (roll), angErrMag, + diagnostics
-function TRQTorqueController.compute(desUpX, desUpY, desUpZ, desYawDeg,
-                                     actUpX, actUpY, actUpZ, actYawDeg,
-                                     rightX, rightY, rightZ,
-                                     fwdX, fwdY, fwdZ,
-                                     dt, subSteps)
+--- @return number bodyTorqueX (pitch)
+--- @return number bodyTorqueY (yaw)
+--- @return number bodyTorqueZ (roll)
+--- @return number angErrMag
+--- @return number desYawDeg, number actYawDeg, number errYDeg
+--- @return number esoRatePitch, number esoRateYaw, number esoRateRoll
+--- @return number Ix, number Iz
+--- @return number esoDistPitch, number esoDistRoll, number esoDistYaw
+--- @return number esoErrPitch, number esoErrRoll
+function ADRCTorqueController.compute(desUpX, desUpY, desUpZ, desYawDeg,
+                                      actUpX, actUpY, actUpZ, actYawDeg,
+                                      rightX, rightY, rightZ,
+                                      fwdX, fwdY, fwdZ,
+                                      dt, subSteps)
 
     -- === DIAGNOSTIC PULSE MODE ===
-    -- Set trqDiagPulseAxis to 1/2/3 to activate.
-    -- First 300 frames: normal ADRC runs (ascend + stabilize).
-    -- After delay: ESO bypassed, fixed torque pulse 30 frames on, 30 off.
-    -- Logged: rateCmdX = measured pitch rate, rateCmdZ = measured roll rate,
-    -- integralX = pulse state (1=on, 0=off), integralZ = pulse torque.
-    local diagAxis = HeliConfig.GetTrqDiagPulseAxis()
+    local diagAxis = HeliConfig.GetAdrcDiagPulseAxis()
     if diagAxis and diagAxis > 0 then
         _diagFrameCount = _diagFrameCount + 1
-        local DIAG_DELAY = 300  -- 5s at 60fps: normal ADRC during this time
+        local DIAG_DELAY = 300
 
         if _diagFrameCount > DIAG_DELAY then
             local nSteps = math.max(subSteps or 1, 1)
             local physicsDt = nSteps * 0.01
-            local pulseTorque = HeliConfig.GetTrqDiagPulseTorque()
+            local pulseTorque = HeliConfig.GetAdrcDiagPulseTorque()
 
             -- Measure body-frame angular rates from up-vector change
             local measPitchRate, measRollRate, measYawRate = 0, 0, 0
@@ -331,7 +302,7 @@ function TRQTorqueController.compute(desUpX, desUpY, desUpZ, desYawDeg,
                    measPitchRate, measRollRate,
                    pulseOn and 1 or 0, pulseTorque
         end
-        -- During delay: fall through to normal ADRC below
+        -- During delay: fall through to normal ADRC
     end
 
     -- === TILT ERROR via up-vector cross product (world frame) ===
@@ -352,40 +323,46 @@ function TRQTorqueController.compute(desUpX, desUpY, desUpZ, desYawDeg,
     end
 
     -- === PROJECT WORLD ERROR ONTO BODY AXES ===
-    -- Body pitch error = world error projected onto body-right (rotation around right = pitch)
-    -- Body roll error = world error projected onto body-forward (rotation around forward = roll)
-    -- Body yaw error from scalar heading (not from cross product — more robust for yaw)
     local bodyErrPitch = worldErrX * rightX + worldErrY * rightY + worldErrZ * rightZ
     local bodyErrRoll  = worldErrX * fwdX  + worldErrY * fwdY  + worldErrZ * fwdZ
 
-    -- === YAW ERROR (scalar, same as before) ===
+    -- === YAW ERROR (scalar) ===
     local errYDeg = wrapAngle(desYawDeg - actYawDeg)
     local errYaw = rad(errYDeg)
 
     local angErrMag = sqrt(bodyErrPitch * bodyErrPitch + errYaw * errYaw + bodyErrRoll * bodyErrRoll)
 
-    -- === BODY-FRAME INERTIA (constant, no heading correction needed) ===
+    -- === BODY-FRAME INERTIA ===
     local I_pitch = _Ix
     local I_roll = _Iz
     local I_yaw = _Iy
 
     -- === PHYSICS TIMESTEP ===
-    local DT_SUBSTEP = 0.01
     local nSteps = math.max(subSteps or 1, 1)
     local physicsDt = nSteps * DT_SUBSTEP
 
-    -- === ESO PARAMETERS ===
-    local wo = HeliConfig.GetTrqEsoWo()
-    local wcTilt = HeliConfig.GetTrqEsoWcTilt()
-    local wcYaw = HeliConfig.GetTrqEsoWcYaw()
-    local maxTorque = HeliConfig.GetTrqMaxTorque()
+    -- === ESO BANDWIDTH RAMP ===
+    -- Ramp restarts on liftoff (notifyLiftoff resets _woRampFrame).
+    -- During ground mode, uses full wo (ground errors are small, no risk).
+    if _woRampFrame >= 0 then
+        _woRampFrame = _woRampFrame + 1
+    end
+    local wo = HeliConfig.GetAdrcEsoWo()
+    local warmupTotal = HeliConfig.GetAdrcWarmupFrames()
+    if _woRampFrame >= 0 and _woRampFrame <= warmupTotal then
+        local progress = _woRampFrame / warmupTotal
+        local woFrac = HeliConfig.GetAdrcWarmupWoFraction()
+        wo = wo * (woFrac + (1.0 - woFrac) * progress)
+    end
+    local wcTilt = HeliConfig.GetAdrcWcTilt()
+    local wcYaw = HeliConfig.GetAdrcWcYaw()
+    local maxTorque = HeliConfig.GetAdrcMaxTorque()
 
-    -- Control gain: b = 1/I_body (CONSTANT per axis, no heading dependency)
     local b_pitch = 1 / I_pitch
     local b_roll = 1 / I_roll
     local b_yaw = 1 / I_yaw
 
-    -- === INITIALIZE ESOs ===
+    -- === INITIALIZE ESOs on first frame ===
     if not _esoInitialized then
         _esoPitch.x1 = bodyErrPitch; _esoPitch.x2 = 0; _esoPitch.x3 = 0
         _esoRoll.x1  = bodyErrRoll;  _esoRoll.x2 = 0;  _esoRoll.x3 = 0
@@ -394,7 +371,6 @@ function TRQTorqueController.compute(desUpX, desUpY, desUpZ, desYawDeg,
     end
 
     -- === UPDATE ESOs ===
-    -- When wcTilt=0: skip tilt ESOs entirely (diagnostic: isolate yaw-only torque)
     local tiltDisabled = (wcTilt == 0)
     local maxDistPitch = maxTorque * b_pitch
     local maxDistRoll = maxTorque * b_roll
@@ -403,14 +379,14 @@ function TRQTorqueController.compute(desUpX, desUpY, desUpZ, desYawDeg,
         esoUpdate(_esoPitch, bodyErrPitch, b_pitch, _uPrevPitch, wo, physicsDt, maxDistPitch)
         esoUpdate(_esoRoll,  bodyErrRoll,  b_roll,  _uPrevRoll,  wo, physicsDt, maxDistRoll)
     end
-    esoUpdate(_esoYaw,   errYaw,       b_yaw,   _uPrevYaw,   wo, physicsDt, maxDistYaw)
+    esoUpdate(_esoYaw, errYaw, b_yaw, _uPrevYaw, wo, physicsDt, maxDistYaw)
 
     -- === ADRC CONTROL LAW ===
     local rawPitch = tiltDisabled and 0 or adrcControl(_esoPitch, wcTilt, b_pitch)
     local rawRoll  = tiltDisabled and 0 or adrcControl(_esoRoll,  wcTilt, b_roll)
-    local rawYaw   = adrcControl(_esoYaw,   wcYaw,  b_yaw)
+    local rawYaw   = adrcControl(_esoYaw, wcYaw, b_yaw)
 
-    -- === PRIORITY-BASED TORQUE ALLOCATION ===
+    -- === PRIORITY-BASED TORQUE ALLOCATION (tilt over yaw) ===
     local tiltDemand = abs(rawPitch) + abs(rawRoll)
     local yawDemand = abs(rawYaw)
     local totalDemand = tiltDemand + yawDemand
@@ -434,8 +410,8 @@ function TRQTorqueController.compute(desUpX, desUpY, desUpZ, desYawDeg,
         torqueYaw = 0
     end
 
-    -- === GYROSCOPIC FEEDFORWARD (body frame, optional) ===
-    local gyroScale = HeliConfig.GetTrqGyroScale()
+    -- === GYROSCOPIC FEEDFORWARD (optional) ===
+    local gyroScale = HeliConfig.GetAdrcGyroScale()
     if gyroScale > 0 then
         local wP = _esoPitch.x2
         local wY = _esoYaw.x2
@@ -448,34 +424,39 @@ function TRQTorqueController.compute(desUpX, desUpY, desUpZ, desYawDeg,
         torqueRoll  = torqueRoll  + gyroScale * (wP * IwY - wY * IwP)
     end
 
-    -- === STORE APPLIED TORQUES ===
+    -- === STORE APPLIED TORQUES for next frame's ESO ===
     _uPrevPitch = torquePitch
     _uPrevRoll = torqueRoll
     _uPrevYaw = torqueYaw
 
     -- === RETURN: body torques + diagnostics ===
-    -- Output order: bodyTorqueX(pitch), bodyTorqueY(yaw), bodyTorqueZ(roll)
-    -- matches TRQCoupleForce.applyBodyAligned(vehicle, bodyTorqueX, bodyTorqueY, bodyTorqueZ, ...)
-    --
-    -- Diagnostic fields (same positional signature for TRQEngine compatibility):
-    --   ctrlWOmX/Y/Z → ESO rate estimates for pitch/yaw/roll
-    --   effIwx/effIwz → body inertia Ix/Iz (constant now, for verification)
-    --   rateCmdX/Z → ESO disturbance estimates pitch/roll (x3)
-    --   integralX/Z → ESO error estimates pitch/roll (x1)
     return torquePitch, torqueYaw, torqueRoll, angErrMag,
            desYawDeg, actYawDeg, errYDeg,
-           _esoPitch.x2, _esoYaw.x2, _esoRoll.x2,  -- rate estimates
-           I_pitch, I_roll,                           -- body inertia (constant)
-           _esoPitch.x3, _esoRoll.x3,               -- disturbance estimates
-           _esoPitch.x1, _esoRoll.x1                 -- error estimates
+           _esoPitch.x2, _esoYaw.x2, _esoRoll.x2,
+           I_pitch, I_roll,
+           _esoPitch.x3, _esoRoll.x3, _esoYaw.x3,
+           _esoPitch.x1, _esoRoll.x1,
+           wo
 end
 
 --- @return number Ix, number Iy, number Iz, boolean valid
-function TRQTorqueController.getInertia()
+function ADRCTorqueController.getInertia()
     return _Ix, _Iy, _Iz, _inertiaValid
 end
 
-function TRQTorqueController.reset()
+--- Signal that the helicopter has lifted off. Resets ESO states and starts
+--- the bandwidth ramp. Called by ADRCEngine on first airborne frame.
+function ADRCTorqueController.notifyLiftoff()
+    _woRampFrame = 0
+    -- Re-initialize ESO from scratch on liftoff
+    _esoPitch = {x1 = 0, x2 = 0, x3 = 0}
+    _esoRoll  = {x1 = 0, x2 = 0, x3 = 0}
+    _esoYaw   = {x1 = 0, x2 = 0, x3 = 0}
+    _uPrevPitch = 0; _uPrevRoll = 0; _uPrevYaw = 0
+    _esoInitialized = false
+end
+
+function ADRCTorqueController.reset()
     _Ix = 1; _Iy = 1; _Iz = 1
     _inertiaValid = false
     _esoPitch = {x1 = 0, x2 = 0, x3 = 0}
@@ -483,6 +464,7 @@ function TRQTorqueController.reset()
     _esoYaw   = {x1 = 0, x2 = 0, x3 = 0}
     _uPrevPitch = 0; _uPrevRoll = 0; _uPrevYaw = 0
     _esoInitialized = false
+    _woRampFrame = -1  -- disabled until notifyLiftoff
     _diagFrameCount = 0
     _diagPrevUpX = nil; _diagPrevUpY = nil; _diagPrevUpZ = nil
     _diagPrevYawRad = nil
