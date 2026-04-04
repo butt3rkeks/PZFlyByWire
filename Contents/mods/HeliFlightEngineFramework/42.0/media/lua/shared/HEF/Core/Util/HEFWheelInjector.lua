@@ -19,10 +19,11 @@
 
     Phantom wheel design (intentional):
       - No model field → invisible, never rendered
-      - Positioned at centerOfMassOffset → eliminates asymmetric moment arm that
-        caused directional tilt bias during ascent/descent. With offset (0,0,0) the
-        wheel was 7m forward of CoM on UH-1B, giving a pitch-axis moment arm.
-      - Vehicle-level suspension must be zeroed in .txt → no ground interaction forces
+      - Positioned at origin (0,0,0) = compound center of rotation. Any contact
+        force at this point produces zero torque (relPos = 0). Previous placement
+        at centerOfMassOffset created a moment arm that caused precession drift
+        in hover — vehicle-level suspension values (stiffness=50, damping=2.98)
+        override the per-wheel zeros, so the wheel was NOT force-free.
       - Sole purpose: getWheelCount() > 0 in updateVelocityMultiplier()
 
     No registration required. Any helicopter registered in HeliList is covered
@@ -100,21 +101,18 @@ local function injectPhantomWheelIntoWarThunderHelis()
         local script = sm:getVehicle("Base." .. heliName)
         if script then
             if script:getWheelCount() == 0 then
-                -- Read CoM offset so phantom wheel sits at CoM (zero moment arm)
-                local comX, comY, comZ = readCoMOffset(script)
-                local wheelScript = buildPhantomWheelScript(comX, comY, comZ)
+                -- Place phantom wheel at origin (0,0,0) = compound center of rotation.
+                -- Any contact force at this point produces zero torque (relPos = 0).
+                -- Previously placed at CoM offset, which created a moment arm causing
+                -- precession drift because vehicle-level suspension overrides per-wheel zeros.
+                local wheelScript = buildPhantomWheelScript(0, 0, 0)
 
                 local ok, err = pcall(function()
                     script:Load(script:getFullName(), wheelScript)
                 end)
                 if ok then
-                    if comX ~= 0 or comY ~= 0 or comZ ~= 0 then
-                        print("[HEF] WheelInjector: injected phantom wheel into " .. script:getFullName()
-                            .. " at CoM (" .. string.format("%.3f, %.3f, %.3f", comX, comY, comZ) .. ")")
-                    else
-                        print("[HEF] WheelInjector: injected phantom wheel into " .. script:getFullName()
-                            .. " at origin (no CoM offset)")
-                    end
+                    print("[HEF] WheelInjector: injected phantom wheel into " .. script:getFullName()
+                        .. " at origin (zero torque)")
                 else
                     print("[HEF] WheelInjector: ERROR injecting into " .. heliName .. ": " .. tostring(err))
                 end

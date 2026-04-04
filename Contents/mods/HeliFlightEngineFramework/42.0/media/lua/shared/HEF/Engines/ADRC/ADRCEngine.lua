@@ -50,11 +50,9 @@ local _airborneStarted = false
 -- Smoothed values
 local _gravTrim = 0
 local _smoothedVelY = 0
-local _smoothedYawRate = 0
-local _smoothedPitchRate = 0
-local _smoothedRollRate = 0
+-- (smoothed rates moved to ADRCInputProcessor)
 local _adaptiveGainMultiplier = 1.0
-local _rampedTargetVelY = 0
+-- (rampedTargetVelY moved to ADRCInputProcessor)
 
 -- Yaw controller state (inline, no separate module needed for ADRC)
 local _desiredYawDeg = nil
@@ -105,10 +103,6 @@ function ADRCEngine.resetFlightState()
     _warmupCounter = HeliConfig.GetAdrcWarmupFrames()
     _gravTrim = 0
     _smoothedVelY = 0
-    _smoothedYawRate = 0
-    _smoothedPitchRate = 0
-    _smoothedRollRate = 0
-    _rampedTargetVelY = 0
     _adaptiveGainMultiplier = 1.0
     _desiredYawDeg = nil
     _yawCoasting = false
@@ -118,6 +112,7 @@ function ADRCEngine.resetFlightState()
     _airborneStarted = false
     _tireInflationSet = false
 
+    ADRCInputProcessor.reset()
     ADRCOrientation.reset()
     ADRCTorqueController.reset()
     HeliForceAdapter.resetPhysicsTime()
@@ -163,9 +158,11 @@ function ADRCEngine.update(ctx)
     local freeMode = vehicle:getModData().AutoBalance == true
     _flightAssistOff = freeMode
 
-    -- Set phantom wheel tire inflation (once, deferred from initFlight)
+    -- Disable phantom wheel in airborne mode — suspension contact forces at the
+    -- wheel's CoM offset (0, 0.54, -1.60) create asymmetric torque that causes
+    -- precession drift. Tire inflation 0 = wheel inactive.
     if not _tireInflationSet then
-        local ok = pcall(vehicle.setTireInflation, vehicle, 0, 1.0)
+        local ok = pcall(vehicle.setTireInflation, vehicle, 0, 0.0)
         if ok then _tireInflationSet = true end
     end
 
@@ -192,76 +189,21 @@ function ADRCEngine.update(ctx)
 
     ADRCOrientation.updateActualState(actUpX, actUpY, actUpZ, actFwdX, actFwdY, actFwdZ, actYawDeg)
 
-    -- 2. Key input -> rotation deltas with first-order rate smoothing
-    local heliType = ctx.heliType
-    local blocked = ctx.blocked
-    local fpsMultiplier = ctx.fpsMultiplier
-
-    local basicAccelRate = HeliList[heliType].BasicAccelerationModifier or 0.15
-    local maxSpeed = HeliList[heliType].MaxSpeed or 0.3
-    if not HeliList[heliType].BasicAccelerationModifier then
-        basicAccelRate = 0.4; maxSpeed = 0.15
-    end
-    local angle_90 = math.rad(90)
-
-    -- Yaw (A/D)
-    local rawYawRate = 0
-    local isRotating = false
-    if keys.a then rawYawRate = HeliConfig.GetYawRotationSpeed(); isRotating = true end
-    if keys.d then rawYawRate = -HeliConfig.GetYawRotationSpeed(); isRotating = true end
-
-    -- Pitch (UP/DOWN)
-    local rawPitchRate = 0
-    if keys.up and not keys.left and not keys.right then
-        local bodyPitch = ADRCOrientation.getBodyPitch()
-        if bodyPitch < angle_90 + maxSpeed and not blocked.up then
-            rawPitchRate = basicAccelRate
-        end
-    elseif keys.down and not keys.left and not keys.right then
-        local bodyPitch = ADRCOrientation.getBodyPitch()
-        if bodyPitch > angle_90 - maxSpeed and not blocked.down then
-            rawPitchRate = -basicAccelRate
-        end
-    end
-
-    -- Roll (LEFT/RIGHT)
-    local rawRollRate = 0
-    if keys.left and not keys.up and not keys.down then
-        local bodyRoll = ADRCOrientation.getBodyRoll()
-        if bodyRoll < angle_90 + maxSpeed and not blocked.left then
-            rawRollRate = -basicAccelRate
-        end
-    elseif keys.right and not keys.up and not keys.down then
-        local bodyRoll = ADRCOrientation.getBodyRoll()
-        if bodyRoll > angle_90 - maxSpeed and not blocked.right then
-            rawRollRate = basicAccelRate
-        end
-    end
-
-    -- First-order smoothing
-    local tau = HeliConfig.GetAdrcInputSmoothingTau()
-    local dt_input = 1.0 / ctx.fps
-    if tau > 0.001 then
-        local alpha = 1.0 - math.exp(-dt_input / tau)
-        _smoothedYawRate   = _smoothedYawRate   + (rawYawRate   - _smoothedYawRate)   * alpha
-        _smoothedPitchRate = _smoothedPitchRate + (rawPitchRate - _smoothedPitchRate) * alpha
-        _smoothedRollRate  = _smoothedRollRate  + (rawRollRate  - _smoothedRollRate)  * alpha
-    else
-        _smoothedYawRate   = rawYawRate
-        _smoothedPitchRate = rawPitchRate
-        _smoothedRollRate  = rawRollRate
-    end
-
-    local pitchDelta = _smoothedPitchRate * fpsMultiplier
-    local rollDelta  = _smoothedRollRate  * fpsMultiplier
-    local yawDelta   = _smoothedYawRate   * fpsMultiplier
+    -- 2. Process input: smoothed tilt/yaw rates + ramped vertical target
+    local bodyPitch = ADRCOrientation.getBodyPitch()
+    local bodyRoll = ADRCOrientation.getBodyRoll()
+    local input = ADRCInputProcessor.update(keys, ctx, freeMode, bodyPitch, bodyRoll)
+    local pitchDelta = input.pitchDelta
+    local rollDelta  = input.rollDelta
+    local yawDelta   = input.yawDelta
+    local isRotating = input.isRotating
+    local hasTiltInput = input.hasTiltInput
 
     -- 3. Apply tilt + yaw to orientation
     ADRCOrientation.applyTilt(pitchDelta, rollDelta)
     ADRCOrientation.applyYaw(yawDelta)
 
     -- Decay tilt to level when no directional input
-    local hasTiltInput = keys.up or keys.down or keys.left or keys.right
     if not hasTiltInput then
         local decayPerSec = HeliConfig.GetAdrcTiltDecayRate()
         local dt_decay = 1.0 / ctx.fps
@@ -369,26 +311,14 @@ function ADRCEngine.update(ctx)
         ctx.applyForce(dragFX, 0, dragFZ)
     end
 
-    -- 7. Vertical control (same as framework pattern)
+    -- 7. Vertical control (target from input processor, force from ForceComputer)
     local alphaV = ADRCEngine.VERTICAL_VELOCITY_SMOOTHING
     _smoothedVelY = alphaV * velY + (1.0 - alphaV) * _smoothedVelY
 
-    local rawTargetVelY, gravComp, vBraking, engineDead = FlightModel.computeVerticalTarget(ctx, freeMode)
-
-    -- Landing zone taper
-    local currentAltitude = ctx.currentAltitude
-    local groundLevelZ = ctx.groundLevelZ
-    if rawTargetVelY < 0 and currentAltitude < groundLevelZ + HeliConfig.GetAdrcLandingZoneHeight() then
-        local landingFactor = math.max((currentAltitude - groundLevelZ) / HeliConfig.GetAdrcLandingZoneHeight(), 0)
-        landingFactor = math.max(landingFactor, HeliConfig.GetAdrcLandingMinSpeedFactor())
-        rawTargetVelY = rawTargetVelY * landingFactor
-    end
-
-    -- Ramp vertical target to prevent force spikes
-    local rampRate = 4.0
-    local dt_ramp = 1.0 / ctx.fps
-    _rampedTargetVelY = _rampedTargetVelY + (rawTargetVelY - _rampedTargetVelY) * (1.0 - math.exp(-rampRate * dt_ramp))
-    local targetVelY = _rampedTargetVelY
+    local targetVelY = input.targetVelY
+    local gravComp = input.gravComp
+    local vBraking = input.vBraking
+    local engineDead = input.engineDead
 
     -- Adaptive vertical gain
     local absTarget = math.abs(targetVelY)
@@ -583,17 +513,14 @@ function ADRCEngine.updateGround(ctx)
         end
         if ctx.subSteps > 0 then
             local freeMode = vehicle:getModData().AutoBalance == true
-            local targetVelY_g, gravComp_g = FlightModel.computeVerticalTarget(ctx, freeMode)
-            if targetVelY_g < 0 and ctx.currentAltitude < ctx.groundLevelZ + HeliConfig.GetAdrcLandingZoneHeight() then
-                local landFactor = math.max((ctx.currentAltitude - ctx.groundLevelZ) / HeliConfig.GetAdrcLandingZoneHeight(), 0)
-                landFactor = math.max(landFactor, HeliConfig.GetAdrcLandingMinSpeedFactor())
-                targetVelY_g = targetVelY_g * landFactor
-            end
+            local bodyPitch = ADRCOrientation.getBodyPitch()
+            local bodyRoll = ADRCOrientation.getBodyRoll()
+            local gInput = ADRCInputProcessor.update(keys, ctx, freeMode, bodyPitch, bodyRoll)
             local verticalGain = HeliConfig.GetVerticalGain()
             local gravity = HeliConfig.GetGravity()
             local forceY = ForceComputer.computeThrustForce(
-                targetVelY_g, velY, mass, verticalGain, gravity,
-                ctx.subSteps, ctx.physicsDelta, gravComp_g)
+                gInput.targetVelY, velY, mass, verticalGain, gravity,
+                ctx.subSteps, ctx.physicsDelta, gInput.gravComp)
             ctx.applyForce(0, forceY, 0)
         end
 

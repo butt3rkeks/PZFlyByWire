@@ -183,6 +183,43 @@ local function helicopterMovementUpdate()
 
         vehicle:setSpeedKmHour(groundResult.displaySpeed)
         _dualPathActive = false
+
+        -- Record ground mode frames (captures liftoff transients)
+        if HeliDebug.isRecording() then
+            local engineDebugState = HeliSimService.getDebugState()
+            local recordingVelocity = vehicle:getLinearVelocity(Vector3f.new())
+            local keyStr = ""
+            if keys.up then keyStr = keyStr .. "U" end
+            if keys.down then keyStr = keyStr .. "D" end
+            if keys.left then keyStr = keyStr .. "L" end
+            if keys.right then keyStr = keyStr .. "R" end
+            if keys.w then keyStr = keyStr .. "W" end
+            if keys.s then keyStr = keyStr .. "S" end
+            if keys.a then keyStr = keyStr .. "a" end
+            if keys.d then keyStr = keyStr .. "d" end
+            if keyStr == "" then keyStr = "-" end
+            HeliDebug.writeFlightFrame({
+                ms          = getTimestampMs(),
+                state       = "ground",
+                fps         = getAverageFPS(),
+                actualX     = HeliUtil.toLuaNum(vehicle:getX()),
+                actualZ     = HeliUtil.toLuaNum(vehicle:getY()),
+                alt         = currentAltitude,
+                velocityX   = HeliUtil.toLuaNum(recordingVelocity:x()),
+                velocityY   = HeliUtil.toLuaNum(recordingVelocity:y()),
+                velocityZ   = HeliUtil.toLuaNum(recordingVelocity:z()),
+                desiredVelX = 0, desiredVelZ = 0, desiredVelY = 0,
+                subSteps    = HeliForceAdapter.getLastSubSteps(),
+                tilt        = false,
+                flightAssistOff = false,
+                yawSimulated = HeliSimService.getIntendedYaw() or 0,
+                yawActual   = HeliUtil.toLuaNum(vehicle:getAngleY()),
+                gravComp    = false,
+                dualPath    = false,
+                keys        = keyStr,
+            }, engineDebugState)
+        end
+
         return
     end
 

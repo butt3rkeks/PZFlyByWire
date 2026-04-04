@@ -1,10 +1,16 @@
 --[[
     ADRCOrientation -- Desired orientation tracker for the ADRC engine
 
-    Manages the desired orientation as separated yaw (scalar) + tilt (quaternion).
+    Manages the desired orientation as separated yaw (scalar) + pitch/roll (scalars).
     Tilt decays toward level when no directional input is held.
     Body angles for input clamping come from ACTUAL vehicle state (Bullet),
     not from the desired orientation (torque always lags desired).
+
+    IMPORTANT: Tilt is stored as scalar pitch/roll angles, NOT as an accumulated
+    quaternion. The full desired quaternion is reconstructed each frame from
+    yaw + pitch + roll. This eliminates path-dependent spiral drift that occurred
+    when accumulating quaternion increments at changing headings (simultaneous
+    pitch + yaw created phantom roll from different-axis accumulation).
 
     Uses Models/Quaternion for quaternion math.
     Depends only on HeliConfig (via ADRCHeliConfig getters).
@@ -19,10 +25,11 @@ local function clamp(v, lo, hi)
 end
 
 -------------------------------------------------------------------------------------
--- Desired state: separated yaw (scalar) + tilt (quaternion)
+-- Desired state: yaw + pitch + roll as scalars (degrees)
 -------------------------------------------------------------------------------------
 local _yawDeg = nil
-local _tiltQuat = nil
+local _pitchDeg = 0    -- desired pitch angle (degrees, positive = forward)
+local _rollDeg = 0     -- desired roll angle (degrees, positive = right)
 local _initialized = false
 
 -------------------------------------------------------------------------------------
@@ -37,11 +44,20 @@ local _actFwdZ = 1
 local _actYawDeg = 0
 
 -------------------------------------------------------------------------------------
--- Compose full desired orientation from yaw + tilt.
+-- Compose full desired orientation from yaw + pitch + roll scalars.
+-- Reconstructed fresh each frame — no path-dependent accumulation.
+-- Order: yaw (world Y) * pitch (heading-relative right axis) * roll (heading-relative forward axis)
 -------------------------------------------------------------------------------------
 local function composeOrientation()
     local yawQ = Quaternion.fromAxisAngle(math.rad(_yawDeg), 0, 1, 0)
-    return yawQ * _tiltQuat
+    -- Pitch around body-right at current heading
+    local yawRad = math.rad(_yawDeg)
+    local cosY = math.cos(yawRad)
+    local sinY = math.sin(yawRad)
+    local pitchQ = Quaternion.fromAxisAngle(math.rad(_pitchDeg), cosY, 0, -sinY)
+    -- Roll around body-forward at current heading
+    local rollQ = Quaternion.fromAxisAngle(math.rad(_rollDeg), sinY, 0, cosY)
+    return pitchQ * rollQ * yawQ
 end
 
 -------------------------------------------------------------------------------------
@@ -58,7 +74,8 @@ function ADRCOrientation.initFromVehicle(angleX, angleY, angleZ)
     local fwdX = 2 * (fullQ.x * fullQ.z + fullQ.w * fullQ.y)
     local fwdZ = 1 - 2 * (fullQ.x * fullQ.x + fullQ.y * fullQ.y)
     _yawDeg = math.deg(math.atan2(fwdX, fwdZ))
-    _tiltQuat = Quaternion.identity()
+    _pitchDeg = 0
+    _rollDeg = 0
     _initialized = true
 end
 
@@ -89,54 +106,30 @@ end
 --- Reset all orientation state.
 function ADRCOrientation.reset()
     _yawDeg = nil
-    _tiltQuat = nil
+    _pitchDeg = 0
+    _rollDeg = 0
     _initialized = false
     _actUpX = 0; _actUpY = 1; _actUpZ = 0
     _actFwdX = 0; _actFwdY = 0; _actFwdZ = 1
     _actYawDeg = 0
 end
 
---- Apply body-frame tilt corrections to the desired orientation.
---- Tilt axes are rotated by the current heading so pitch is always forward/back
---- and roll is always left/right regardless of which direction the helicopter faces.
---- Without this, pitch at heading -86° would produce roll (world X ≈ body forward).
+--- Apply tilt deltas to desired pitch/roll angles.
+--- Heading-independent: pitch is always forward/back, roll is always left/right
+--- regardless of heading. No quaternion accumulation — scalars are path-independent.
 --- @param pitchDelta number Pitch delta (degrees, positive = tilt forward)
 --- @param rollDelta number Roll delta (degrees, positive = tilt right)
 function ADRCOrientation.applyTilt(pitchDelta, rollDelta)
-    if pitchDelta ~= 0 or rollDelta ~= 0 then
-        -- Heading-rotated body axes (horizontal plane):
-        --   body right = (cos(yaw), 0, -sin(yaw))
-        --   body forward = (sin(yaw), 0, cos(yaw))
-        local yawRad = math.rad(_yawDeg)
-        local cosY = math.cos(yawRad)
-        local sinY = math.sin(yawRad)
-
-        -- Pitch: rotate around body-right axis (perpendicular to heading)
-        if pitchDelta ~= 0 then
-            local nqp = Quaternion.fromAxisAngle(math.rad(pitchDelta), cosY, 0, -sinY)
-            _tiltQuat = _tiltQuat * nqp
-        end
-        -- Roll: rotate around body-forward axis (along heading)
-        if rollDelta ~= 0 then
-            local nqr = Quaternion.fromAxisAngle(math.rad(rollDelta), sinY, 0, cosY)
-            _tiltQuat = _tiltQuat * nqr
-        end
-        _tiltQuat:normalize()
-    end
+    _pitchDeg = _pitchDeg + pitchDelta
+    _rollDeg = _rollDeg + rollDelta
 end
 
 --- Decay desired tilt toward level when no directional input.
---- Uses LERP toward identity quaternion at the given rate.
 --- @param rate number Decay alpha (0-1 per frame)
 function ADRCOrientation.decayTiltToLevel(rate)
-    if not _tiltQuat then return end
     local t = math.min(rate, 1.0)
-    local id = Quaternion.identity()
-    _tiltQuat.w = _tiltQuat.w + (id.w - _tiltQuat.w) * t
-    _tiltQuat.x = _tiltQuat.x + (id.x - _tiltQuat.x) * t
-    _tiltQuat.y = _tiltQuat.y + (id.y - _tiltQuat.y) * t
-    _tiltQuat.z = _tiltQuat.z + (id.z - _tiltQuat.z) * t
-    _tiltQuat:normalize()
+    _pitchDeg = _pitchDeg * (1 - t)
+    _rollDeg = _rollDeg * (1 - t)
 end
 
 --- Apply yaw delta to desired heading.
@@ -152,7 +145,6 @@ function ADRCOrientation.getBodyPitch()
     local yawRad = math.rad(_actYawDeg)
     local cosY = math.cos(yawRad)
     local sinY = math.sin(yawRad)
-    -- Forward component of tilt after removing heading
     local tiltZ = -sinY * _actUpX + cosY * _actUpZ
     return math.acos(clamp(-tiltZ, -1, 1))
 end
@@ -163,17 +155,17 @@ function ADRCOrientation.getBodyRoll()
     local yawRad = math.rad(_actYawDeg)
     local cosY = math.cos(yawRad)
     local sinY = math.sin(yawRad)
-    -- Right component of tilt after removing heading
     local tiltX = cosY * _actUpX + sinY * _actUpZ
     return math.acos(clamp(tiltX, -1, 1))
 end
 
 --- Get desired up-vector from TILT ONLY (no heading component).
---- Heading-independent: avoids cross-coupling between yaw lag and tilt correction.
 --- @return number upX, number upY, number upZ World-frame desired up-vector
 function ADRCOrientation.getDesiredUpVector()
-    if not _tiltQuat then return 0, 1, 0 end
-    return _tiltQuat:vectorY()
+    local pitchQ = Quaternion.fromAxisAngle(math.rad(_pitchDeg), 1, 0, 0)
+    local rollQ = Quaternion.fromAxisAngle(math.rad(_rollDeg), 0, 0, 1)
+    local tiltQ = pitchQ * rollQ
+    return tiltQ:vectorY()
 end
 
 --- Get current desired yaw in degrees.
@@ -207,6 +199,7 @@ function ADRCOrientation.getActualUp()
 end
 
 --- Get composed desired orientation quaternion (includes heading).
+--- Reconstructed fresh — no accumulated drift.
 --- @return Quaternion
 function ADRCOrientation.getQuaternion()
     return composeOrientation()

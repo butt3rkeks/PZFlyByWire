@@ -74,7 +74,7 @@ local ADRC_PARAMS = {
 
     -- Gyroscopic feedforward scale (0=disabled, 1=full cancellation).
     -- PZBullet has no gyroscopic compensation; this adds omega x I*omega feedforward.
-    adrcGyroScale = { default = 1.0, min = 0.0, max = 2.0, desc = "Gyroscopic feedforward (0=off, 1=full cancellation)" },
+    adrcGyroScale = { default = 0.0, min = 0.0, max = 2.0, desc = "Gyroscopic feedforward (0=off, not applicable - PZBullet has no gyroscopic forces to cancel)" },
 
     -- Ground mode
     adrcGroundVelocityKill   = { default = 100.0, min = 0.0, max = 500.0, desc = "Ground velocity kill factor" },
