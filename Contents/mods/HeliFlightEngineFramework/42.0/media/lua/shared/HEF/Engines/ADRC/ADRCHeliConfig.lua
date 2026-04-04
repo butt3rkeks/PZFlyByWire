@@ -20,6 +20,11 @@ local ADRC_PARAMS = {
     adrcEsoWo       = { default = 20.0,  min = 1.0,   max = 100.0,  desc = "ESO observer bandwidth (rad/s, higher=faster tracking)" },
     adrcWcTilt      = { default = 5.0,   min = 0.1,   max = 20.0,   desc = "ADRC tilt controller bandwidth (rad/s)" },
     adrcWcYaw       = { default = 3.0,   min = 0.1,   max = 15.0,   desc = "ADRC yaw controller bandwidth (rad/s)" },
+    adrcWcRoll      = { default = 0.3, min = 0.1, max = 20.0, desc = "Roll rate ADRC bandwidth (lower for low-inertia axis)" },
+
+    -- Attitude P gain (outer loop): maps quaternion error angle to rate setpoint (rad/s).
+    -- Higher = snappier correction, lower = smoother. ArduPilot default ~4.5.
+    adrcKpAtt       = { default = 4.0,   min = 0.5,   max = 20.0,   desc = "Attitude P gain (error angle to rate setpoint)" },
 
     -- Couple-force geometry
     adrcCoupleOffset = { default = 1.0,  min = 0.1,  max = 5.0,    desc = "Couple-force offset distance (meters)" },
@@ -84,7 +89,7 @@ local ADRC_PARAMS = {
 }
 
 local ADRC_PARAM_ORDER = {
-    "adrcEsoWo", "adrcWcTilt", "adrcWcYaw",
+    "adrcKpAtt", "adrcEsoWo", "adrcWcTilt", "adrcWcRoll", "adrcWcYaw",
     "adrcCoupleOffset", "adrcMaxTorque",
     "adrcInputSmoothingTau", "adrcTiltDecayRate",
     "adrcDragCoeff", "adrcDragTiltThreshold",
@@ -102,12 +107,16 @@ HeliConfig.registerParams(ADRC_PARAMS, ADRC_PARAM_ORDER)
 -- Typed getters: ADRC params. Defined on HeliConfig for uniform access.
 -------------------------------------------------------------------------------------
 
+--- @return number Attitude P gain (outer loop)
+function HeliConfig.GetAdrcKpAtt() return HeliConfig.get("adrcKpAtt") end
 --- @return number ESO observer bandwidth (rad/s)
 function HeliConfig.GetAdrcEsoWo() return HeliConfig.get("adrcEsoWo") end
 --- @return number ADRC tilt controller bandwidth (rad/s)
 function HeliConfig.GetAdrcWcTilt() return HeliConfig.get("adrcWcTilt") end
 --- @return number ADRC yaw controller bandwidth (rad/s)
 function HeliConfig.GetAdrcWcYaw() return HeliConfig.get("adrcWcYaw") end
+--- @return number Roll rate ADRC bandwidth (rad/s)
+function HeliConfig.GetAdrcWcRoll() return HeliConfig.get("adrcWcRoll") end
 --- @return number Couple-force offset distance (meters)
 function HeliConfig.GetAdrcCoupleOffset() return HeliConfig.get("adrcCoupleOffset") end
 --- @return number Max torque budget (Nm)

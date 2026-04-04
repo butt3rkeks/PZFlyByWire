@@ -272,11 +272,11 @@ function ADRCEngine.update(ctx)
     -- While rotating: desired advances by input rate.
     -- On release: set desired = actual every frame (zero ADRC yaw error),
     -- and apply direct velocity-proportional yaw damping torque via couple force.
-    -- This bypasses the yaw ADRC during coast — the ESO oscillates at high
+    -- This bypasses the yaw ADRC during coast -- the ESO oscillates at high
     -- yaw rates because the discrete gains overcorrect. Direct damping is
     -- smooth and predictable: torque = -dampCoeff * yawRate * I_yaw.
     local YAW_DAMP_COEFF = 5.0   -- damping coefficient (higher = faster stop)
-    local YAW_LOCK_RATE = 2.0    -- deg/s — lock heading when below this
+    local YAW_LOCK_RATE = 2.0    -- deg/s -- lock heading when below this
     if not _desiredYawDeg then
         _desiredYawDeg = actYawDeg
     end
@@ -297,7 +297,7 @@ function ADRCEngine.update(ctx)
             -- Coast: track actual (zero yaw error for ADRC) + direct damping
             _desiredYawDeg = actYawDeg
             if math.abs(measuredYawRate) < YAW_LOCK_RATE then
-                -- Rotation stopped — lock heading, end coast
+                -- Rotation stopped -- lock heading, end coast
                 _desiredYawDeg = actYawDeg
                 _yawCoasting = false
                 _yawDampTorque = 0
@@ -314,29 +314,14 @@ function ADRCEngine.update(ctx)
     end
     _prevActYawDeg = actYawDeg
 
-    -- 5. ADRC torque controller
-    local desUpX, desUpY, desUpZ = ADRCOrientation.getDesiredUpVector()
+    -- 5. Cascaded attitude controller: quaternion error -> rate ADRC -> torque
+    local desQ = ADRCOrientation.getQuaternion()
+    -- Build actual quaternion from vehicle vectors (bypasses Euler convention ambiguity)
+    local actQ = Quaternion.fromVectors(
+        actRightX, actRightY, actRightZ,
+        actUpX, actUpY, actUpZ,
+        actFwdX, actFwdY, actFwdZ)
 
-    -- Desired yaw from full quaternion
-    local desQuat = ADRCOrientation.getQuaternion()
-    local desFwdX = 2 * (desQuat.x * desQuat.z + desQuat.w * desQuat.y)
-    local desFwdZ = 1 - 2 * (desQuat.x * desQuat.x + desQuat.y * desQuat.y)
-    local rawDesYawDeg = math.deg(math.atan2(desFwdX, desFwdZ))
-
-    -- Rate-limit desired yaw lead
-    local maxYawLead = HeliConfig.GetAdrcMaxYawLead()
-    local yawLead = wrapAngle(rawDesYawDeg - actYawDeg)
-    local desYawDeg
-    if yawLead > maxYawLead then
-        desYawDeg = actYawDeg + maxYawLead
-    elseif yawLead < -maxYawLead then
-        desYawDeg = actYawDeg - maxYawLead
-    else
-        desYawDeg = rawDesYawDeg
-    end
-
-    -- ESO bandwidth ramp is handled internally by ADRCTorqueController
-    -- (applies to both update and updateGround uniformly).
     local dt = 1.0 / ctx.fps
     local torqueX, torqueY, torqueZ, angErrMag,
           ctrlDesYaw, ctrlActYaw, ctrlErrY,
@@ -345,12 +330,7 @@ function ADRCEngine.update(ctx)
           esoDistPitch, esoDistRoll, esoDistYaw,
           esoErrPitch, esoErrRoll,
           woActual =
-        ADRCTorqueController.compute(
-            desUpX, desUpY, desUpZ, desYawDeg,
-            actUpX, actUpY, actUpZ, actYawDeg,
-            actRightX, actRightY, actRightZ,
-            actFwdX, actFwdY, actFwdZ,
-            dt, ctx.subSteps)
+        ADRCTorqueController.compute(desQ, actQ, dt, ctx.subSteps)
 
     -- Apply body-frame torque via body-aligned couple forces.
     -- compute() returns body-frame torque (pitch/yaw/roll around body axes).
@@ -377,9 +357,9 @@ function ADRCEngine.update(ctx)
 
     -- Drag always active: acts as air resistance limiting horizontal speed.
     -- Without continuous drag, body-up thrust at any tilt creates runaway
-    -- horizontal acceleration (thrust → horizontal component → speed → no brake).
+    -- horizontal acceleration (thrust -> horizontal component -> speed -> no brake).
     -- When tilting intentionally, drag opposes the thrust's horizontal component,
-    -- creating an equilibrium speed proportional to tilt angle — natural feel.
+    -- creating an equilibrium speed proportional to tilt angle -- natural feel.
     -- When level with no input, drag brakes to a stop.
     if hSpeed > 0.01 then
         local dragCoeff = HeliConfig.GetAdrcDragCoeff()
@@ -430,8 +410,8 @@ function ADRCEngine.update(ctx)
         ctx.subSteps, ctx.physicsDelta, gravComp)
     -- World-up thrust with adaptive gravity trim.
     -- Problem: our force applies in 1 of N substeps, gravity acts every substep.
-    -- Instead of computing extra gravity from N (which jitters 3↔4 causing bias),
-    -- learn the correct trim from observed drift. During hover (targetVelY≈0),
+    -- Instead of computing extra gravity from N (which jitters 3<->4 causing bias),
+    -- learn the correct trim from observed drift. During hover (targetVelY~=0),
     -- any persistent velY drift means our gravity compensation is wrong.
     -- An integrator accumulates the error and adjusts the trim force until drift = 0.
     local nSteps = math.max(ctx.subSteps or 1, 1)
@@ -467,6 +447,7 @@ function ADRCEngine.update(ctx)
     _dbg.angErrMag = safeNum(angErrMag)
     _dbg.targetVelY = safeNum(targetVelY)
     _dbg.actUpX = safeNum(actUpX); _dbg.actUpY = safeNum(actUpY); _dbg.actUpZ = safeNum(actUpZ)
+    local desUpX, desUpY, desUpZ = desQ:vectorY()
     _dbg.desUpX = safeNum(desUpX); _dbg.desUpY = safeNum(desUpY); _dbg.desUpZ = safeNum(desUpZ)
     _dbg.desAngleX = safeNum(desAngleX); _dbg.desAngleY = safeNum(desAngleY); _dbg.desAngleZ = safeNum(desAngleZ)
     _dbg.actAngleX = safeNum(ctx.angleX); _dbg.actAngleY = safeNum(ctx.angleY); _dbg.actAngleZ = safeNum(ctx.angleZ)
@@ -483,7 +464,7 @@ function ADRCEngine.update(ctx)
     _dbg.mass = safeNum(mass)
     _dbg.vertForce = safeNum(verticalForce)
     _dbg.pitchDelta = safeNum(pitchDelta); _dbg.rollDelta = safeNum(rollDelta)
-    _dbg.yawLead = safeNum(wrapAngle(rawDesYawDeg - actYawDeg))
+    _dbg.yawLead = safeNum(ctrlErrY or 0)
     _dbg.dragFX = safeNum(dragFX); _dbg.dragFZ = safeNum(dragFZ)
     _dbg.hSpeed = safeNum(hSpeed); _dbg.displaySpeed = safeNum(displaySpeed)
 
@@ -546,29 +527,20 @@ function ADRCEngine.updateGround(ctx)
 
     ADRCOrientation.updateActualState(actUpX, actUpY, actUpZ, actFwdX, actFwdY, actFwdZ, actYawDeg)
 
-    -- Desired up from tilt only
-    local desUpX, desUpY, desUpZ = ADRCOrientation.getDesiredUpVector()
-    local desQuat = ADRCOrientation.getQuaternion()
-    local desFwdX = 2 * (desQuat.x * desQuat.z + desQuat.w * desQuat.y)
-    local desFwdZ = 1 - 2 * (desQuat.x * desQuat.x + desQuat.y * desQuat.y)
-    local desYawDeg = math.deg(math.atan2(desFwdX, desFwdZ))
+    -- Cascaded attitude controller: quaternion error -> rate ADRC -> torque
+    local desQ = ADRCOrientation.getQuaternion()
+    local actQ = Quaternion.fromVectors(
+        actRightX, actRightY, actRightZ,
+        actUpX, actUpY, actUpZ,
+        actFwdX, actFwdY, actFwdZ)
 
-    -- Only apply couple force torque in the transition zone (t > 0) or when
-    -- ascending (W key). On the pure ground, couple forces are counterproductive:
-    -- the ESO accumulates phantom disturbance from the substep mismatch and
-    -- ground constraint (vehicle can't rotate freely), and maxTorque (200kNm)
-    -- overwhelms gravity's restoring torque (5.6kNm) by 35×. When the ground
-    -- constraint releases at liftoff, the accumulated bias flips the helicopter.
-    -- Gravity + terrain collision hold orientation on the ground — no couple forces needed.
+    -- Only apply couple forces in transition zone or during W-key ascent.
+    -- On pure ground, ESO accumulates phantom disturbance from ground constraint.
     local applyCoupleForces = inTransition or (keys.w and ctx.fuelPercent > 0)
 
     local dt = 1.0 / ctx.fps
     local torqueX, torqueY, torqueZ = ADRCTorqueController.compute(
-        desUpX, desUpY, desUpZ, desYawDeg,
-        actUpX, actUpY, actUpZ, actYawDeg,
-        actRightX, actRightY, actRightZ,
-        actFwdX, actFwdY, actFwdZ,
-        dt, ctx.subSteps)
+        desQ, actQ, dt, ctx.subSteps)
 
     if applyCoupleForces then
         local substepMul = 1

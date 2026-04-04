@@ -333,6 +333,47 @@ function Quaternion.matrixToEuler(m11, m12, m13, m21, m22, m23, m31, m32, m33)
     return math.deg(x), math.deg(y), math.deg(z)
 end
 
+--- Construct quaternion from right/up/forward column vectors (rotation matrix).
+--- Shepperd method: numerically stable for all orientations.
+--- @param rx number Right-axis X, @param ry number, @param rz number
+--- @param ux number Up-axis X, @param uy number, @param uz number
+--- @param fx number Forward-axis X, @param fy number, @param fz number
+--- @return Quaternion
+function Quaternion.fromVectors(rx, ry, rz, ux, uy, uz, fx, fy, fz)
+    -- Rotation matrix columns: R = [right | up | forward]
+    -- m11=rx m12=ux m13=fx
+    -- m21=ry m22=uy m23=fy
+    -- m31=rz m32=uz m33=fz
+    local trace = rx + uy + fz
+    local w, x, y, z
+    if trace > 0 then
+        local s = math.sqrt(trace + 1) * 2  -- s = 4w
+        w = 0.25 * s
+        x = (uz - fy) / s
+        y = (fx - rz) / s
+        z = (ry - ux) / s
+    elseif rx > uy and rx > fz then
+        local s = math.sqrt(1 + rx - uy - fz) * 2  -- s = 4x
+        w = (uz - fy) / s
+        x = 0.25 * s
+        y = (ux + ry) / s
+        z = (fx + rz) / s
+    elseif uy > fz then
+        local s = math.sqrt(1 + uy - rx - fz) * 2  -- s = 4y
+        w = (fx - rz) / s
+        x = (ux + ry) / s
+        y = 0.25 * s
+        z = (uz + fy) / s
+    else
+        local s = math.sqrt(1 + fz - rx - uy) * 2  -- s = 4z
+        w = (ry - ux) / s
+        x = (fx + rz) / s
+        y = (uz + fy) / s
+        z = 0.25 * s
+    end
+    return Quaternion.new(w, x, y, z)
+end
+
 -------------------------------------------------------------------------------------
 -- Pre-allocated temps (for engine-internal zero-alloc paths)
 -------------------------------------------------------------------------------------
