@@ -48,6 +48,7 @@ local _tireInflationSet = false
 local _airborneStarted = false
 
 -- Smoothed values
+local _gravTrim = 0
 local _smoothedVelY = 0
 local _smoothedYawRate = 0
 local _smoothedPitchRate = 0
@@ -58,7 +59,7 @@ local _rampedTargetVelY = 0
 -- Yaw controller state (inline, no separate module needed for ADRC)
 local _desiredYawDeg = nil
 local _yawCoasting = false
-local _yawCoastRate = 0
+local _yawDampTorque = 0
 local _prevActYawDeg = nil
 local _esoWarmupFrame = 0
 
@@ -102,6 +103,7 @@ end
 function ADRCEngine.resetFlightState()
     _flightAssistOff = false
     _warmupCounter = HeliConfig.GetAdrcWarmupFrames()
+    _gravTrim = 0
     _smoothedVelY = 0
     _smoothedYawRate = 0
     _smoothedPitchRate = 0
@@ -110,7 +112,7 @@ function ADRCEngine.resetFlightState()
     _adaptiveGainMultiplier = 1.0
     _desiredYawDeg = nil
     _yawCoasting = false
-    _yawCoastRate = 0
+    _yawDampTorque = 0
     _prevActYawDeg = nil
     _esoWarmupFrame = 0
     _airborneStarted = false
@@ -266,43 +268,47 @@ function ADRCEngine.update(ctx)
         ADRCOrientation.decayTiltToLevel(1.0 - math.exp(-decayPerSec * dt_decay))
     end
 
-    -- 4. Yaw controller: smooth coast-to-stop on key release.
-    -- While rotating: desired advances by input rate, track yaw velocity.
-    -- On release: desired continues advancing using a decaying yaw velocity
-    -- (exponential deceleration). This gives a smooth gradual stop instead
-    -- of abrupt braking. The ADRC sees small error → small torque → gentle stop.
-    local YAW_COAST_DECAY = 3.0  -- per second — higher = faster decel
-    local YAW_COAST_LOCK_RATE = 0.5  -- deg/s — lock heading when this slow
+    -- 4. Yaw controller: direct damping during coast.
+    -- While rotating: desired advances by input rate.
+    -- On release: set desired = actual every frame (zero ADRC yaw error),
+    -- and apply direct velocity-proportional yaw damping torque via couple force.
+    -- This bypasses the yaw ADRC during coast — the ESO oscillates at high
+    -- yaw rates because the discrete gains overcorrect. Direct damping is
+    -- smooth and predictable: torque = -dampCoeff * yawRate * I_yaw.
+    local YAW_DAMP_COEFF = 5.0   -- damping coefficient (higher = faster stop)
+    local YAW_LOCK_RATE = 2.0    -- deg/s — lock heading when below this
     if not _desiredYawDeg then
         _desiredYawDeg = actYawDeg
+    end
+    -- Measure yaw rate
+    local measuredYawRate = 0  -- deg/s
+    if _prevActYawDeg then
+        measuredYawRate = wrapAngle(actYawDeg - _prevActYawDeg) * ctx.fps
     end
     if isRotating then
         _desiredYawDeg = _desiredYawDeg + yawDelta
         if _desiredYawDeg > 180 then _desiredYawDeg = _desiredYawDeg - 360
         elseif _desiredYawDeg < -180 then _desiredYawDeg = _desiredYawDeg + 360
         end
-        -- Capture current yaw velocity for coast
-        if _prevActYawDeg then
-            _yawCoastRate = wrapAngle(actYawDeg - _prevActYawDeg) * ctx.fps
-        else
-            _yawCoastRate = 0
-        end
         _yawCoasting = true
+        _yawDampTorque = 0
     else
         if _yawCoasting then
-            -- Coast: advance desired by decaying yaw rate
-            local dt_coast = 1.0 / ctx.fps
-            _yawCoastRate = _yawCoastRate * (1.0 - math.min(YAW_COAST_DECAY * dt_coast, 0.95))
-            _desiredYawDeg = _desiredYawDeg + _yawCoastRate * dt_coast
-            if _desiredYawDeg > 180 then _desiredYawDeg = _desiredYawDeg - 360
-            elseif _desiredYawDeg < -180 then _desiredYawDeg = _desiredYawDeg + 360
-            end
-            -- Lock when rate is negligible
-            if math.abs(_yawCoastRate) < YAW_COAST_LOCK_RATE then
+            -- Coast: track actual (zero yaw error for ADRC) + direct damping
+            _desiredYawDeg = actYawDeg
+            if math.abs(measuredYawRate) < YAW_LOCK_RATE then
+                -- Rotation stopped — lock heading, end coast
                 _desiredYawDeg = actYawDeg
                 _yawCoasting = false
-                _yawCoastRate = 0
+                _yawDampTorque = 0
+            else
+                -- Apply direct yaw damping torque (will be added to couple forces)
+                local Iy = ADRCTorqueController.getInertia()  -- returns Ix,Iy,Iz,valid
+                local _, I_yaw_val = ADRCTorqueController.getInertia()
+                _yawDampTorque = -YAW_DAMP_COEFF * math.rad(measuredYawRate) * I_yaw_val
             end
+        else
+            _yawDampTorque = 0
         end
         ADRCOrientation.setYaw(_desiredYawDeg)
     end
@@ -346,13 +352,18 @@ function ADRCEngine.update(ctx)
             actFwdX, actFwdY, actFwdZ,
             dt, ctx.subSteps)
 
-    -- Apply body-frame torque via couple forces
+    -- Apply body-frame torque via body-aligned couple forces.
+    -- compute() returns body-frame torque (pitch/yaw/roll around body axes).
     local substepMul = 1
     if HeliConfig.GetAdrcSubstepCompensation() >= 1 then
         substepMul = math.max(ctx.subSteps or 1, 1)
     end
+    local appliedYawTorque = torqueY * substepMul
+    if _yawCoasting and _yawDampTorque ~= 0 then
+        appliedYawTorque = _yawDampTorque
+    end
     ADRCCoupleForce.applyBodyAligned(vehicle,
-        torqueX * substepMul, torqueY * substepMul, torqueZ * substepMul,
+        torqueX * substepMul, appliedYawTorque, torqueZ * substepMul,
         actRightX, actRightY, actRightZ,
         actUpX, actUpY, actUpZ,
         actFwdX, actFwdY, actFwdZ)
@@ -417,25 +428,32 @@ function ADRCEngine.update(ctx)
     local verticalForce = ForceComputer.computeThrustForce(
         targetVelY, _smoothedVelY, mass, verticalGain, gravity,
         ctx.subSteps, ctx.physicsDelta, gravComp)
-    -- Apply thrust along BODY up axis (not world up).
-    -- When the helicopter tilts, the thrust vector tilts with it — the horizontal
-    -- component creates horizontal acceleration. This is how real helicopters move:
-    -- tilt → thrust has horizontal component → horizontal velocity.
-    --
-    -- Tilt-based thrust scaling: at extreme tilt (collision, wind), reduce thrust
-    -- to prevent the horizontal component from overwhelming the ADRC's ability to
-    -- level the helicopter. At 90° tilt, all thrust would be horizontal with zero
-    -- vertical — the helicopter falls while rocketing sideways.
-    -- Scale = actUpY (vertical efficiency): at 0° tilt → 1.0, at 45° → 0.71, at 90° → 0.
-    -- This naturally limits horizontal thrust while allowing the helicopter to descend
-    -- gracefully when severely tilted (ADRC can recover without fighting runaway speed).
-    if verticalForce ~= 0 then
-        local thrustScale = math.max(actUpY, 0)  -- 0 when inverted, 1 when level
-        local scaledForce = verticalForce * thrustScale
-        ctx.applyForce(
-            scaledForce * actUpX,
-            scaledForce * actUpY,
-            scaledForce * actUpZ)
+    -- World-up thrust with adaptive gravity trim.
+    -- Problem: our force applies in 1 of N substeps, gravity acts every substep.
+    -- Instead of computing extra gravity from N (which jitters 3↔4 causing bias),
+    -- learn the correct trim from observed drift. During hover (targetVelY≈0),
+    -- any persistent velY drift means our gravity compensation is wrong.
+    -- An integrator accumulates the error and adjusts the trim force until drift = 0.
+    local nSteps = math.max(ctx.subSteps or 1, 1)
+    local trimAlpha = 0.02  -- integrator speed (higher = faster convergence, more noise)
+    local trimDecay = 0.005 -- leaky integrator: bleeds 0.5% per frame toward zero
+    if math.abs(targetVelY) < 0.5 and gravComp then
+        -- Hover/near-hover: integrate velocity error into trim
+        _gravTrim = _gravTrim + _smoothedVelY * mass * trimAlpha
+    end
+    -- Always decay: prevents stale trim from transients
+    _gravTrim = _gravTrim * (1 - trimDecay)
+    -- Clamp to reasonable range
+    local maxTrim = mass * gravity * 3
+    if _gravTrim > maxTrim then _gravTrim = maxTrim end
+    if _gravTrim < -maxTrim then _gravTrim = -maxTrim end
+    -- Always apply: ForceComputer output + base substep compensation + learned trim
+    local baseExtraGrav = 0
+    if gravComp and nSteps > 1 then
+        baseExtraGrav = mass * gravity * (nSteps - 1)
+    end
+    if verticalForce ~= 0 or baseExtraGrav ~= 0 or _gravTrim ~= 0 then
+        ctx.applyForce(0, verticalForce + baseExtraGrav - _gravTrim, 0)
     end
 
     -- 8. Display speed from actual Bullet velocity (not sim)
@@ -535,6 +553,15 @@ function ADRCEngine.updateGround(ctx)
     local desFwdZ = 1 - 2 * (desQuat.x * desQuat.x + desQuat.y * desQuat.y)
     local desYawDeg = math.deg(math.atan2(desFwdX, desFwdZ))
 
+    -- Only apply couple force torque in the transition zone (t > 0) or when
+    -- ascending (W key). On the pure ground, couple forces are counterproductive:
+    -- the ESO accumulates phantom disturbance from the substep mismatch and
+    -- ground constraint (vehicle can't rotate freely), and maxTorque (200kNm)
+    -- overwhelms gravity's restoring torque (5.6kNm) by 35×. When the ground
+    -- constraint releases at liftoff, the accumulated bias flips the helicopter.
+    -- Gravity + terrain collision hold orientation on the ground — no couple forces needed.
+    local applyCoupleForces = inTransition or (keys.w and ctx.fuelPercent > 0)
+
     local dt = 1.0 / ctx.fps
     local torqueX, torqueY, torqueZ = ADRCTorqueController.compute(
         desUpX, desUpY, desUpZ, desYawDeg,
@@ -543,15 +570,17 @@ function ADRCEngine.updateGround(ctx)
         actFwdX, actFwdY, actFwdZ,
         dt, ctx.subSteps)
 
-    local substepMul = 1
-    if HeliConfig.GetAdrcSubstepCompensation() >= 1 then
-        substepMul = math.max(ctx.subSteps or 1, 1)
+    if applyCoupleForces then
+        local substepMul = 1
+        if HeliConfig.GetAdrcSubstepCompensation() >= 1 then
+            substepMul = math.max(ctx.subSteps or 1, 1)
+        end
+        ADRCCoupleForce.applyBodyAligned(vehicle,
+            torqueX * substepMul, torqueY * substepMul, torqueZ * substepMul,
+            actRightX, actRightY, actRightZ,
+            actUpX, actUpY, actUpZ,
+            actFwdX, actFwdY, actFwdZ)
     end
-    ADRCCoupleForce.applyBodyAligned(vehicle,
-        torqueX * substepMul, torqueY * substepMul, torqueZ * substepMul,
-        actRightX, actRightY, actRightZ,
-        actUpX, actUpY, actUpZ,
-        actFwdX, actFwdY, actFwdZ)
 
     -- Vertical forces (same pattern as framework ground mode)
     if keys.w and ctx.fuelPercent > 0 then

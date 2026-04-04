@@ -134,3 +134,62 @@ function ADRCCoupleForce.applyBodyAligned(vehicle,
             f*rightX, f*rightY, f*rightZ)
     end
 end
+
+--- Apply world-frame torque vector via world-axis couple forces.
+--- Used for single-axis tilt correction (no body decomposition).
+--- The torque vector (tiltX, tiltY, tiltZ) is in world/standard math coords.
+--- Yaw torque is applied separately via body-up couple.
+--- @param vehicle BaseVehicle
+--- @param tiltTorqueX number World-frame torque X component (Nm)
+--- @param tiltTorqueY number World-frame torque Y component (Nm, usually small)
+--- @param tiltTorqueZ number World-frame torque Z component (Nm)
+--- @param yawTorque number Yaw torque (Nm, applied around body-up axis)
+--- @param upX number Body-up X, @param upY number, @param upZ number
+--- @param rightX number Body-right X, @param rightY number, @param rightZ number
+--- @param fwdX number Body-fwd X, @param fwdY number, @param fwdZ number
+function ADRCCoupleForce.applyWorldTilt(vehicle,
+                                        tiltTorqueX, tiltTorqueY, tiltTorqueZ,
+                                        yawTorque,
+                                        rightX, rightY, rightZ,
+                                        upX, upY, upZ,
+                                        fwdX, fwdY, fwdZ)
+    local d = HeliConfig.GetAdrcCoupleOffset()
+    if d <= 0 then return end
+
+    local vx = toLuaNum(vehicle:getX())
+    local vy = toLuaNum(vehicle:getY())
+    local vz = toLuaNum(vehicle:getZ())
+
+    -- World-frame tilt torque via world-axis couple forces.
+    -- X torque: offset along Z, force along Y
+    if abs(tiltTorqueX) > MIN_TORQUE then
+        local f = tiltTorqueX / (2 * d)
+        applyOffsetForce(vehicle, vx, vy, vz, 0, 0, d,  0, -f, 0)
+        applyOffsetForce(vehicle, vx, vy, vz, 0, 0, -d, 0, f, 0)
+    end
+
+    -- Y torque (small, from tilt axis having a vertical component): offset along X, force along Z
+    if abs(tiltTorqueY) > MIN_TORQUE then
+        local f = tiltTorqueY / (2 * d)
+        applyOffsetForce(vehicle, vx, vy, vz, d, 0, 0,  0, 0, -f)
+        applyOffsetForce(vehicle, vx, vy, vz, -d, 0, 0, 0, 0, f)
+    end
+
+    -- Z torque: offset along Y, force along X
+    if abs(tiltTorqueZ) > MIN_TORQUE then
+        local f = tiltTorqueZ / (2 * d)
+        applyOffsetForce(vehicle, vx, vy, vz, 0, d, 0,  -f, 0, 0)
+        applyOffsetForce(vehicle, vx, vy, vz, 0, -d, 0, f, 0, 0)
+    end
+
+    -- Yaw: still body-aligned (around body-up axis)
+    if abs(yawTorque) > MIN_TORQUE then
+        local f = yawTorque / (2 * d)
+        applyOffsetForce(vehicle, vx, vy, vz,
+            d*rightX, d*rightY, d*rightZ,
+            -f*fwdX, -f*fwdY, -f*fwdZ)
+        applyOffsetForce(vehicle, vx, vy, vz,
+            -d*rightX, -d*rightY, -d*rightZ,
+            f*fwdX, f*fwdY, f*fwdZ)
+    end
+end

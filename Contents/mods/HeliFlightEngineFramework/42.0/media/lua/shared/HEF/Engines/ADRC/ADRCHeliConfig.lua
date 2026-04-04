@@ -17,7 +17,7 @@
 
 local ADRC_PARAMS = {
     -- ESO / ADRC bandwidths
-    adrcEsoWo       = { default = 15.0,  min = 1.0,   max = 100.0,  desc = "ESO observer bandwidth (rad/s, higher=faster tracking)" },
+    adrcEsoWo       = { default = 20.0,  min = 1.0,   max = 100.0,  desc = "ESO observer bandwidth (rad/s, higher=faster tracking)" },
     adrcWcTilt      = { default = 5.0,   min = 0.1,   max = 20.0,   desc = "ADRC tilt controller bandwidth (rad/s)" },
     adrcWcYaw       = { default = 3.0,   min = 0.1,   max = 15.0,   desc = "ADRC yaw controller bandwidth (rad/s)" },
 

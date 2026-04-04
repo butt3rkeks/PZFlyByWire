@@ -61,6 +61,14 @@ local _uPrevYaw   = 0
 
 local _esoInitialized = false
 
+-- Previous frame's error measurements: used to seed ESO rate (x2) on re-init.
+-- Ground mode compute() populates these; notifyLiftoff() preserves them.
+-- This gives the ESO an immediate rate estimate instead of assuming zero velocity.
+local _prevBodyErrPitch = nil
+local _prevBodyErrRoll = nil
+local _prevErrYaw = nil
+local _prevDt = nil
+
 -- Internal warmup: ramps ESO bandwidth from low to full over N frames.
 -- Lives here (not in ADRCEngine) so ALL callers (update + updateGround) get the ramp.
 local _woRampFrame = 0
@@ -129,6 +137,16 @@ local function esoUpdate(eso, y, b, u_prev, wo, dt, maxDist)
     eso.x1 = x1_1 + K1 * e
     eso.x2 = x2_1 + K2 * e
     eso.x3 = x3_1 + K3 * e
+
+    -- Leaky x3: decay toward zero. The zero-torque test proved no persistent
+    -- external torque disturbances exist. x3 should always be near zero.
+    -- Without decay, x3 accumulates phantom disturbances from discrete ESO
+    -- prediction errors during rapid force transitions (ascent→descent),
+    -- then drives the ADRC to apply torque in the wrong direction.
+    -- Decay rate 0.03/frame: x3 halves in ~23 frames (~0.8s at 30fps).
+    -- Fast enough to clear transient artifacts, slow enough to track any
+    -- real disturbance (collision, asymmetric loading) for a few seconds.
+    eso.x3 = eso.x3 * 0.97
 
     if maxDist then
         eso.x3 = clamp(eso.x3, -maxDist, maxDist)
@@ -305,45 +323,48 @@ function ADRCTorqueController.compute(desUpX, desUpY, desUpZ, desYawDeg,
         -- During delay: fall through to normal ADRC
     end
 
-    -- === TILT ERROR via up-vector cross product (world frame) ===
-    local crossX = actUpY * desUpZ - actUpZ * desUpY
-    local crossY = actUpZ * desUpX - actUpX * desUpZ
-    local crossZ = actUpX * desUpY - actUpY * desUpX
+    -- === TILT ERROR: cross product projected onto body axes ===
+    -- Cross product desired × actual gives the rotation axis from actual to desired.
+    -- Project onto body axes to get independent pitch (body-X) and roll (body-Z) errors.
+    -- Body-frame ESOs use constant inertia (Ix for pitch, Iz for roll) — no heading
+    -- dependency, so the ESO's constant-b assumption is always satisfied.
+    local crossX = desUpY * actUpZ - desUpZ * actUpY
+    local crossY = desUpZ * actUpX - desUpX * actUpZ
+    local crossZ = desUpX * actUpY - desUpY * actUpX
 
     local dotProd = clamp(actUpX * desUpX + actUpY * desUpY + actUpZ * desUpZ, -1, 1)
     local tiltAngle = acos(dotProd)
     local sinAngle = sqrt(crossX * crossX + crossY * crossY + crossZ * crossZ)
 
-    local worldErrX, worldErrY, worldErrZ = 0, 0, 0
+    -- Scale cross product by tiltAngle/sinAngle for linear error near zero
+    local bodyErrPitch, bodyErrRoll = 0, 0
     if sinAngle > 0.0001 then
         local scale = tiltAngle / sinAngle
-        worldErrX = crossX * scale
-        worldErrY = crossY * scale
-        worldErrZ = crossZ * scale
+        local scaledX = crossX * scale
+        local scaledY = crossY * scale
+        local scaledZ = crossZ * scale
+        -- Project onto body axes: pitch = dot(error, right), roll = dot(error, forward)
+        bodyErrPitch = scaledX * rightX + scaledY * rightY + scaledZ * rightZ
+        bodyErrRoll  = scaledX * fwdX   + scaledY * fwdY   + scaledZ * fwdZ
     end
 
-    -- === PROJECT WORLD ERROR ONTO BODY AXES ===
-    local bodyErrPitch = worldErrX * rightX + worldErrY * rightY + worldErrZ * rightZ
-    local bodyErrRoll  = worldErrX * fwdX  + worldErrY * fwdY  + worldErrZ * fwdZ
-
-    -- === YAW ERROR (scalar) ===
+    -- === YAW ERROR (scalar, separate axis) ===
     local errYDeg = wrapAngle(desYawDeg - actYawDeg)
     local errYaw = rad(errYDeg)
 
-    local angErrMag = sqrt(bodyErrPitch * bodyErrPitch + errYaw * errYaw + bodyErrRoll * bodyErrRoll)
+    local angErrMag = sqrt(bodyErrPitch * bodyErrPitch + bodyErrRoll * bodyErrRoll + errYaw * errYaw)
 
-    -- === BODY-FRAME INERTIA ===
+    -- === BODY-FRAME INERTIA: constant ===
+    -- Body inertia doesn't change with heading. ESO b = 1/I_body is constant.
     local I_pitch = _Ix
-    local I_roll = _Iz
-    local I_yaw = _Iy
+    local I_roll  = _Iz
+    local I_yaw   = _Iy
 
     -- === PHYSICS TIMESTEP ===
     local nSteps = math.max(subSteps or 1, 1)
     local physicsDt = nSteps * DT_SUBSTEP
 
     -- === ESO BANDWIDTH RAMP ===
-    -- Ramp restarts on liftoff (notifyLiftoff resets _woRampFrame).
-    -- During ground mode, uses full wo (ground errors are small, no risk).
     if _woRampFrame >= 0 then
         _woRampFrame = _woRampFrame + 1
     end
@@ -359,83 +380,76 @@ function ADRCTorqueController.compute(desUpX, desUpY, desUpZ, desYawDeg,
     local maxTorque = HeliConfig.GetAdrcMaxTorque()
 
     local b_pitch = 1 / I_pitch
-    local b_roll = 1 / I_roll
-    local b_yaw = 1 / I_yaw
+    local b_roll  = 1 / I_roll
+    local b_yaw   = 1 / I_yaw
 
-    -- === INITIALIZE ESOs on first frame ===
+    -- === INITIALIZE ESOs ===
+    -- Seed x2 (rate estimate) from previous frame's measurement if available.
     if not _esoInitialized then
-        _esoPitch.x1 = bodyErrPitch; _esoPitch.x2 = 0; _esoPitch.x3 = 0
-        _esoRoll.x1  = bodyErrRoll;  _esoRoll.x2 = 0;  _esoRoll.x3 = 0
-        _esoYaw.x1   = errYaw;       _esoYaw.x2 = 0;   _esoYaw.x3 = 0
+        local ratePitch, rateRoll, rateYaw = 0, 0, 0
+        if _prevBodyErrPitch and _prevDt and _prevDt > 0.001 then
+            ratePitch = (bodyErrPitch - _prevBodyErrPitch) / _prevDt
+            rateRoll  = (bodyErrRoll  - _prevBodyErrRoll)  / _prevDt
+            rateYaw   = (errYaw - _prevErrYaw) / _prevDt
+        end
+        _esoPitch.x1 = bodyErrPitch; _esoPitch.x2 = ratePitch; _esoPitch.x3 = 0
+        _esoRoll.x1  = bodyErrRoll;  _esoRoll.x2 = rateRoll;  _esoRoll.x3 = 0
+        _esoYaw.x1   = errYaw;       _esoYaw.x2 = rateYaw;    _esoYaw.x3 = 0
         _esoInitialized = true
     end
 
-    -- === UPDATE ESOs ===
+    -- === UPDATE ESOs (body pitch and roll, constant inertia) ===
     local tiltDisabled = (wcTilt == 0)
     local maxDistPitch = maxTorque * b_pitch
-    local maxDistRoll = maxTorque * b_roll
-    local maxDistYaw = maxTorque * b_yaw
+    local maxDistRoll  = maxTorque * b_roll
+    local maxDistYaw   = maxTorque * b_yaw
     if not tiltDisabled then
         esoUpdate(_esoPitch, bodyErrPitch, b_pitch, _uPrevPitch, wo, physicsDt, maxDistPitch)
         esoUpdate(_esoRoll,  bodyErrRoll,  b_roll,  _uPrevRoll,  wo, physicsDt, maxDistRoll)
     end
     esoUpdate(_esoYaw, errYaw, b_yaw, _uPrevYaw, wo, physicsDt, maxDistYaw)
 
-    -- === ADRC CONTROL LAW ===
+    -- === ADRC CONTROL LAW (body pitch and roll separately) ===
     local rawPitch = tiltDisabled and 0 or adrcControl(_esoPitch, wcTilt, b_pitch)
     local rawRoll  = tiltDisabled and 0 or adrcControl(_esoRoll,  wcTilt, b_roll)
     local rawYaw   = adrcControl(_esoYaw, wcYaw, b_yaw)
 
-    -- === PRIORITY-BASED TORQUE ALLOCATION (tilt over yaw) ===
+    -- === PRIORITY ALLOCATION ===
     local tiltDemand = abs(rawPitch) + abs(rawRoll)
     local yawDemand = abs(rawYaw)
-    local totalDemand = tiltDemand + yawDemand
+    local torqueYaw = rawYaw
+    local torquePitch = rawPitch
+    local torqueRoll = rawRoll
 
-    local torquePitch, torqueYaw, torqueRoll
-
-    if totalDemand <= maxTorque then
-        torquePitch = rawPitch
-        torqueYaw = rawYaw
-        torqueRoll = rawRoll
-    elseif tiltDemand <= maxTorque then
-        torquePitch = rawPitch
-        torqueRoll = rawRoll
-        local yawBudget = maxTorque - tiltDemand
-        local yawScale = yawBudget / yawDemand
-        torqueYaw = rawYaw * yawScale
-    else
-        local tiltScale = maxTorque / tiltDemand
-        torquePitch = rawPitch * tiltScale
-        torqueRoll = rawRoll * tiltScale
-        torqueYaw = 0
+    if tiltDemand + yawDemand > maxTorque then
+        if tiltDemand <= maxTorque then
+            local yawBudget = maxTorque - tiltDemand
+            torqueYaw = rawYaw * (yawBudget / yawDemand)
+        else
+            local tiltScale = maxTorque / tiltDemand
+            torquePitch = rawPitch * tiltScale
+            torqueRoll = rawRoll * tiltScale
+            torqueYaw = 0
+        end
     end
 
-    -- === GYROSCOPIC FEEDFORWARD (optional) ===
-    local gyroScale = HeliConfig.GetAdrcGyroScale()
-    if gyroScale > 0 then
-        local wP = _esoPitch.x2
-        local wY = _esoYaw.x2
-        local wR = _esoRoll.x2
-        local IwP = I_pitch * wP
-        local IwY = I_yaw * wY
-        local IwR = I_roll * wR
-        torquePitch = torquePitch + gyroScale * (wY * IwR - wR * IwY)
-        torqueYaw   = torqueYaw   + gyroScale * (wR * IwP - wP * IwR)
-        torqueRoll  = torqueRoll  + gyroScale * (wP * IwY - wY * IwP)
-    end
-
-    -- === STORE APPLIED TORQUES for next frame's ESO ===
+    -- === STORE APPLIED TORQUES + MEASUREMENTS ===
     _uPrevPitch = torquePitch
     _uPrevRoll = torqueRoll
     _uPrevYaw = torqueYaw
+    _prevBodyErrPitch = bodyErrPitch
+    _prevBodyErrRoll = bodyErrRoll
+    _prevErrYaw = errYaw
+    _prevDt = physicsDt
 
-    -- === RETURN: body torques + diagnostics ===
+    -- === RETURN ===
+    -- torquePitch/Roll are BODY-FRAME torque (around body-X and body-Z axes).
     return torquePitch, torqueYaw, torqueRoll, angErrMag,
            desYawDeg, actYawDeg, errYDeg,
            _esoPitch.x2, _esoYaw.x2, _esoRoll.x2,
            I_pitch, I_roll,
            _esoPitch.x3, _esoRoll.x3, _esoYaw.x3,
-           _esoPitch.x1, _esoRoll.x1,
+           bodyErrPitch, bodyErrRoll,
            wo
 end
 
@@ -464,6 +478,8 @@ function ADRCTorqueController.reset()
     _esoYaw   = {x1 = 0, x2 = 0, x3 = 0}
     _uPrevPitch = 0; _uPrevRoll = 0; _uPrevYaw = 0
     _esoInitialized = false
+    _prevBodyErrPitch = nil; _prevBodyErrRoll = nil
+    _prevErrYaw = nil; _prevDt = nil
     _woRampFrame = -1  -- disabled until notifyLiftoff
     _diagFrameCount = 0
     _diagPrevUpX = nil; _diagPrevUpY = nil; _diagPrevUpZ = nil
